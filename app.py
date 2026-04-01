@@ -5,7 +5,8 @@ import time
 import threading
 import os
 from flask import Flask
-
+import os
+import threading
 app = Flask(__name__)
 
 # --- بياناتك التي تعمل على VS Code ---
@@ -50,5 +51,11 @@ def home():
     return "✅ Bot is already Running..."
 
 if __name__ == "__main__":
+    # 1. تشغيل محرك الفحص في الخلفية فوراً
+    # تأكد أن اسم الدالة التي تقوم بالفحص هي bot_worker أو scanner
+    t = threading.Thread(target=bot_worker, daemon=True)
+    t.start()
+    
+    # 2. تشغيل السيرفر (هذا السطر للمحلي فقط، Gunicorn سيتولى الأمر في Render)
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
