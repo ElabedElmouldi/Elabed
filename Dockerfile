@@ -1,5 +1,5 @@
 FROM python:3.10-slim
-gunicorn -b 0.0.0.0:10000 app:app
+
 # تحديد مسار العمل
 WORKDIR /app
 
