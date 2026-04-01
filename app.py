@@ -23,10 +23,13 @@ BASE_URL = "https://api1.binance.com"
 
 def send_telegram_msg(message):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    payload = {'chat_id': CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
     try:
-        requests.post(url, data={'chat_id': CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}, timeout=15)
-    except:
-        pass
+        response = requests.post(url, json=payload, timeout=15)
+        # هذا السطر سيطبع نتيجة الإرسال في Logs الخاص بـ Render
+        print(f"Telegram Response: {response.status_code} - {response.text}")
+    except Exception as e:
+        print(f"❌ Telegram Error: {e}")
 
 
 def get_data(symbol):
