@@ -9,54 +9,46 @@ from flask import Flask
 app = Flask(__name__)
 
 # --- بياناتك التي تعمل على VS Code ---
-TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
+TOKEN = 8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68ا"
 CHAT_ID = "5067771509"
 BASE_URL = "https://api1.binance.com"
 
-@app.route('/')
-def home():
-    return "✅ Bot is Live and Scanning..."
+# متغير للتأكد من أن البوت لا يعمل مرتين
+bot_started = False
 
 def send_telegram_msg(message):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     payload = {'chat_id': CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
     try:
         res = requests.post(url, json=payload, timeout=15)
-        print(f"Telegram Log: {res.status_code}") # سيظهر في Render Logs
-    except: pass
-
-def run_scanner():
-    """هذه الدالة هي المحرك الرئيسي"""
-    print("🔎 بدء دورة فحص جديدة...")
-    try:
-        # جلب العملات
-        resp = requests.get(f"{BASE_URL}/api/v3/ticker/24hr").json()
-        symbols = [i['symbol'] for i in sorted(resp, key=lambda x: float(x['quoteVolume']), reverse=True) if i['symbol'].endswith('USDT')][:50]
-        
-        for symbol in symbols:
-            # هنا يوضع منطق EMA و Volume و Fibonacci الذي كتبناه سابقاً
-            # للتبسيط الآن سنطبع فقط أننا نفحص العملة
-            print(f"Checking: {symbol}")
-            time.sleep(0.2)
-            
+        print(f"Telegram Log: {res.status_code}")
     except Exception as e:
-        print(f"Error in Scanner: {e}")
+        print(f"Telegram Error: {e}")
 
-def bot_worker():
-    """دالة تعمل للأبد في الخلفية"""
-    # إرسال رسالة فورية عند التشغيل للتأكد
-    send_telegram_msg("🚀 البوت استيقظ الآن في سيرفر ألمانيا!")
-    
+def scanner_engine():
+    """المحرك الرئيسي للبوت"""
+    send_telegram_msg("🚀 البوت انطلق الآن من سيرفر ألمانيا!")
     while True:
-        run_scanner()
-        print("💤 انتظار 30 دقيقة للفحص القادم...")
-        time.sleep(1800) 
+        try:
+            print("🔎 جاري فحص السوق...")
+            # هنا تضع كود الفحص الخاص بك (EMA, Volume, Fib)
+            # ...
+            print("✅ انتهى الفحص، انتظار 30 دقيقة...")
+            time.sleep(1800)
+        except Exception as e:
+            print(f"Error in engine: {e}")
+            time.sleep(60)
+
+@app.route('/')
+def home():
+    global bot_started
+    if not bot_started:
+        # تشغيل المحرك فور فتح الرابط
+        threading.Thread(target=scanner_engine, daemon=True).start()
+        bot_started = True
+        return "✅ Bot Started and Scanning..."
+    return "✅ Bot is already Running..."
 
 if __name__ == "__main__":
-    # تشغيل البوت في خيط (Thread) منفصل تماماً
-    t = threading.Thread(target=bot_worker, daemon=True)
-    t.start()
-    
-    # تشغيل سيرفر الويب
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
