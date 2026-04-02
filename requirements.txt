@@ -4,3 +4,4 @@ python-telegram-bot
 nest-asyncio
 ccxt
 pandas
+pandas-ta
