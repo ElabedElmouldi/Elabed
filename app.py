@@ -11,7 +11,7 @@ app = Flask(__name__)
 # --- إعدادات التلجرام للقناة الخاصة ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 # الـ ID الخاص بالقناة يجب أن يبدأ بـ -100
-CHANNEL_ID = "1003692815602" 
+CHANNEL_ID = "-1003692815602" 
 
 def send_telegram(message):
     """إرسال التنبيهات إلى القناة الخاصة"""
