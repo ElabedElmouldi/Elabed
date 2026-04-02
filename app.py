@@ -6,7 +6,9 @@ import telegram
 app = Flask(__name__)
 
 # --- ضع بياناتك هنا مباشرة ---
-TOKEN = "ضع_التوكن_الخاص_بك_هنا"
+TOKEN = "> Dream Agency:
+8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68
+"
 CHAT_ID = "ضع_الشات_آيدي_الخاص_بك_هنا"
 # ----------------------------
 
