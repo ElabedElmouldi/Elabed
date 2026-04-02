@@ -12,8 +12,8 @@ nest_asyncio.apply()
 app = Flask(__name__)
 
 # جلب البيانات من إعدادات رندر (أو ضعها يدوياً هنا للاختبار)
-TOKEN = os.environ.get("TELEGRAM_TOKEN", "ضـع_التوكـن_هـنا")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "ضـع_الشات_آيدي_هـنا")
+TOKEN = os.environ.get("TELEGRAM_TOKEN", "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5067771509")
 
 def get_top_20_liquidity():
     """جلب أكثر 20 عملة سيولة من باينانس خلال 24 ساعة"""
