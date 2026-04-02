@@ -8,9 +8,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 
-# --- الإعدادات (تأكد من وضع قيمك هنا) ---
-TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
-CHAT_ID = "5067771509"
+# --- إعدادات التلجرام (تأكد من وضع بياناتك هنا) ---
+TOKEN = "ضـع_التوكـن_هـنا"
+CHAT_ID = "ضـع_الـID_هـنا"
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -20,56 +20,64 @@ def send_telegram(message):
     except Exception as e:
         print(f"Telegram Error: {e}")
 
+def calculate_rsi(df, period=14):
+    delta = df['c'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / (loss + 1e-9)
+    return 100 - (100 / (1 + rs))
+
 def scan_market():
-    print("🔎 فحص السوق جارٍ...")
+    print("🔎 جاري فحص أعلى 20 عملة فوليم (RSI 50-60)...")
     try:
         exchange = ccxt.binance()
-        # فحص أهم 5 عملات لتقليل الضغط على السيرفر المجاني
-        symbols = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'AVAX/USDT']
+        # 1. جلب بيانات جميع العملات مقابل USDT
+        tickers = exchange.fetch_tickers()
+        usdt_tickers = [symbol for symbol in tickers if symbol.endswith('/USDT')]
         
-        for symbol in symbols:
+        # 2. فرز العملات حسب الفوليم (Quote Volume) واختيار أعلى 20
+        sorted_tickers = sorted(usdt_tickers, key=lambda x: tickers[x]['quoteVolume'], reverse=True)
+        top_20_symbols = sorted_tickers[:20]
+        
+        found_opportunities = []
+
+        for symbol in top_20_symbols:
+            # جلب شموع 15 دقيقة
             bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=50)
             df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
             
-            # حساب RSI مبسط
-            delta = df['c'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / (loss + 1e-9)
-            df['RSI'] = 100 - (100 / (1 + rs))
+            # حساب RSI
+            df['RSI'] = calculate_rsi(df)
+            last_rsi = df['RSI'].iloc[-1]
             
-            # حساب البولنجر
-            df['MA20'] = df['c'].rolling(window=20).mean()
-            df['STD'] = df['c'].rolling(window=20).std()
-            df['Lower_BB'] = df['MA20'] - (df['STD'] * 2)
-            
-            last = df.iloc[-1]
-            if not np.isnan(last['RSI']) and last['RSI'] < 32 and last['c'] <= last['Lower_BB']:
-                price = last['c']
-                msg = (
-                    f"🎯 **فرصة سبوت محتملة!**\n"
-                    f"العملة: {symbol}\n"
-                    f"💵 السعر: `{price:.4f}`\n"
-                    f"✅ الهدف (+5%): `{price * 1.05:.4f}`\n"
-                    f"🛑 الوقف (-3%): `{price * 0.97:.4f}`"
-                )
-                send_telegram(msg)
+            # 3. الشرط المطلوب: RSI بين 50 و 60
+            if 50 <= last_rsi <= 60:
+                found_opportunities.append(f"✅ *{symbol.split('/')[0]}* (RSI: {last_rsi:.2f})")
+
+        # 4. إرسال النتائج في رسالة واحدة
+        if found_opportunities:
+            message = "📊 **عملات الـ Volume العالي (RSI 50-60):**\n\n" + "\n".join(found_opportunities)
+            send_telegram(message)
+        else:
+            # اختياري: إرسال رسالة في حال لم يتم العثور على أي عملة تطابق الشرط
+            print("لم يتم العثور على عملات تطابق شروط RSI الحالية.")
+
     except Exception as e:
         print(f"Scan Error: {e}")
 
-# إعداد المجدول ليعمل كل 15 دقيقة
+# المجدول الزمني كل 15 دقيقة
 scheduler = BackgroundScheduler(daemon=True)
 scheduler.add_job(scan_market, 'interval', minutes=15)
 scheduler.start()
 
 @app.route('/')
-def health_check():
-    return "Bot is Alive and Scanning!"
+def health():
+    return "Scanner is Running (Top 20 Volume - RSI 50-60)"
 
 if __name__ == "__main__":
-    # رسالة ترحيب فورية عند التشغيل
-    send_telegram("🚀 السلام عليكم، البوت يعمل بنجاح وبدأ فحص السوق.")
-    # تشغيل فحص أولي فوراً
+    # رسالة ترحيب
+    send_telegram("🚀 تم تفعيل رادار الـ Volume العالي (RSI 50-60).")
+    # تشغيل فحص فوري
     scan_market()
     
     port = int(os.environ.get("PORT", 10000))
