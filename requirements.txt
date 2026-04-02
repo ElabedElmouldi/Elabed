@@ -1,7 +1,8 @@
 flask
 gunicorn
-python-telegram-bot>=20.0
+python-telegram-bot
 nest-asyncio
 ccxt
 pandas
 pandas-ta
+apscheduler
