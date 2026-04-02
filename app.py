@@ -8,10 +8,20 @@ import pandas as pd
 import numpy as np
 
 app = Flask(__name__)
+# --- الإعدادات المباشرة ---
+TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
+CHAT_ID = "5067771509"
 
-# --- الإعدادات ---
-TOKEN = os.environ.get("TELEGRAM_TOKEN", "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5067771509")
+def send_telegram_instant(message):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    try:
+        response = requests.post(url, json=payload)
+        return response.json()
+    except:
+        return None
+
+
 
 def send_telegram_instant(message):
     """إرسال رسالة فورية باستخدام API التلجرام المباشر (أكثر استقراراً للسيرفرات)"""
