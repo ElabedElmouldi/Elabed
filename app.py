@@ -6,8 +6,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 app = Flask(__name__)
 
 # --- إعدادات التلجرام (ضع بياناتك هنا) ---
-TOKEN = "ضـع_التوكـن_هـنا"
-CHAT_ID = "ضـع_الشات_آيدي_هـنا"
+TOKEN = "8492941812:AAEpBgsiYGRdWdC80V2lNpuBXtcz4pxGRLA
+"
+CHAT_ID = "5067771509"
 
 def send_telegram_msg(text):
     """وظيفة إرسال الرسالة إلى تلجرام"""
