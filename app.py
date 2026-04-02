@@ -11,7 +11,7 @@ nest_asyncio.apply()
 app = Flask(__name__)
 
 # بياناتك الخاصة (يفضل وضعها في إعدادات Render)
-TOKEN = os.environ.get("TELEGRAM_TOKEN", "ضـع_التوكـن_هـنا")
+TOKEN = os.environ.get("TELEGRAM_TOKEN", "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "ضـع_الشات_آيدي_هـنا")
 
 def analyze_logic():
