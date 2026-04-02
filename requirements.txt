@@ -1,6 +1,5 @@
-
 flask
 gunicorn
-ccxt
 python-telegram-bot
+ccxt
 pandas
