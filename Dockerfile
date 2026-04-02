@@ -1,24 +1,18 @@
-# استخدام نسخة مستقرة
-FROM python:3.10-slim
+# استخدام نسخة مستقرة وتحتوي على أدوات البناء
+FROM python:3.10
 
-# ضبط المجلد
+# تحديد مجلد العمل
 WORKDIR /app
 
-# تثبيت أدوات النظام الضرورية للبناء
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
-
-# تحديث pip وتثبيت wheel لضمان بناء المكتبات بسرعة
-RUN pip install --no-cache-dir --upgrade pip wheel setuptools
+# تحديث pip و setuptools و wheel (ضروري جداً لـ pandas-ta)
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # نسخ ملف المتطلبات وتثبيته
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# نسخ الكود
+# نسخ بقية ملفات المشروع
 COPY . .
 
-# تشغيل الملف الأساسي
+# التأكد من تشغيل ملف app.py
 CMD ["python", "app.py"]
