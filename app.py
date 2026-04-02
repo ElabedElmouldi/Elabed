@@ -10,49 +10,46 @@ import socketserver
 from datetime import datetime
 
 # بيانات البوت الخاصة بك
-TELEGRAM_TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
+TELEGRAM_TOKEN = "8ف439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 
 CHAT_ID = "-1003692815602"
 
 exchange = ccxt.binance()
-DATA_FILE = 'trading_data.json'
+DATA_FILE = 'active_trades.json'
 
-def load_data():
+def load_active_trades():
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, 'r') as f:
                 return json.load(f)
         except: pass
-    return {"active_trades": [], "completed_trades": [], "last_report_date": ""}
+    return []
 
-def save_data(data):
+def save_active_trades(trades):
     with open(DATA_FILE, 'w') as f:
-        json.dump(data, f, indent=4)
+        json.dump(trades, f, indent=4)
 
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
     try:
         requests.post(url, data=payload)
-    except: pass
-
-def calculate_rsi(series, period=14):
-    """حساب مؤشر RSI يدوياً"""
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+    except:
+        print("خطأ في الاتصال بتلغرام")
 
 def calculate_indicators(df):
-    """حساب Bollinger Bands و RSI بدون مكتبات خارجية"""
-    # حساب المتوسط المتحرك والانحراف المعياري للبولينجر
+    """حساب المؤشرات يدوياً لتجنب مشاكل المكتبات الخارجية"""
+    # Bollinger Bands
     df['ma20'] = df['close'].rolling(window=20).mean()
     df['std'] = df['close'].rolling(window=20).std()
     df['upper_band'] = df['ma20'] + (df['std'] * 2)
     
-    # حساب RSI
-    df['rsi'] = calculate_rsi(df['close'])
+    # RSI
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df['rsi'] = 100 - (100 / (1 + rs))
     return df
 
 def check_signal(symbol):
@@ -64,68 +61,75 @@ def check_signal(symbol):
         last = df.iloc[-1]
         prev = df.iloc[-2]
         
-        # شرط الاختراق: السعر الحالي فوق البولينجر العلوي والسابق كان تحته + RSI قوي
+        # شرط الاختراق: السعر الحالي اخترق البولينجر العلوي + RSI قوي
         if last['close'] > last['upper_band'] and prev['close'] <= prev['upper_band'] and last['rsi'] > 60:
-            return True, last['close']
+            return True, last['close'], last['rsi']
     except: pass
-    return False, 0
+    return False, 0, 0
 
-def monitor_trades():
-    data = load_data()
-    updated_active = []
-    for trade in data['active_trades']:
+def monitor_existing_trades():
+    """مراقبة الصفقات المفتوحة لإرسال تنبيه عند الربح أو الخسارة"""
+    active_trades = load_active_trades()
+    still_open = []
+    
+    for trade in active_trades:
         try:
-            curr_p = exchange.fetch_ticker(trade['symbol'])['last']
+            ticker = exchange.fetch_ticker(trade['symbol'])
+            curr_p = ticker['last']
             change = ((curr_p - trade['entry_price']) / trade['entry_price']) * 100
             
             if change >= 5.0:
-                trade['result'] = "✅ +5.0%"
-                data['completed_trades'].append(trade)
-                send_telegram(f"🎯 *هدف محقق!* \nالعملة: `{trade['symbol']}` \nالربح: `+5%`")
+                send_telegram(f"✅ *الهدف تحقق! (Target Hit)*\n💰 العملة: `{trade['symbol']}`\n📈 الربح: `+5%` \n💵 سعر الخروج: `{curr_p}`")
             elif change <= -2.5:
-                trade['result'] = "❌ -2.5%"
-                data['completed_trades'].append(trade)
-                send_telegram(f"🛑 *وقف خسارة!* \nالعملة: `{trade['symbol']}` \nالخسارة: `-2.5%`")
+                send_telegram(f"🛑 *وقف الخسارة! (Stop Loss)*\n📉 العملة: `{trade['symbol']}`\n🔻 النتيجة: `-2.5%` \n💵 سعر الخروج: `{curr_p}`")
             else:
-                updated_active.append(trade)
-        except: updated_active.append(trade)
-    
-    data['active_trades'] = updated_active
-    save_data(data)
-
-def daily_report():
-    data = load_data()
-    today = datetime.now().strftime('%Y-%m-%d')
-    if data['last_report_date'] == today: return
-
-    report = f"📊 *تقرير التداول - {today}*\n\n✅ *المنتهية:* {len(data['completed_trades'])}\n⏳ *المفتوحة:* {len(data['active_trades'])}\n"
-    for t in data['completed_trades']:
-        report += f"• `{t['symbol']}` {t['result']}\n"
-    
-    send_telegram(report)
-    data['completed_trades'] = []
-    data['last_report_date'] = today
-    save_data(data)
+                still_open.append(trade)
+        except:
+            still_open.append(trade)
+            
+    save_active_trades(still_open)
 
 def main():
-    send_telegram("🚀 *البوت يعمل الآن (بدون مكتبة pandas_ta)*")
+    # 1. تنبيه عند التشغيل
+    send_telegram("🚀 *بدأ البوت العمل الآن...*\nتم تفعيل نظام المراقبة اللحظي لـ 50 عملة.")
+    
     while True:
-        monitor_trades()
-        data = load_data()
+        # 2. تنبيه عند بدء البحث في السوق (يظهر في Terminal فقط لعدم إزعاج القناة)
+        print(f"🔎 جاري فحص السوق الآن: {datetime.now().strftime('%H:%M:%S')}")
         
-        tickers = exchange.fetch_tickers()
-        symbols = [s for s in tickers if '/USDT' in s and 'UP' not in s and 'DOWN' not in s]
-        top_50 = sorted(symbols, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:50]
+        # مراقبة الصفقات المفتوحة
+        monitor_existing_trades()
+        
+        # البحث عن فرص جديدة
+        active_trades = load_active_trades()
+        try:
+            tickers = exchange.fetch_tickers()
+            # فلترة العملات مقابل USDT فقط واستبعاد العملات المرفوعة (Leveraged tokens)
+            symbols = [s for s in tickers if '/USDT' in s and 'UP' not in s and 'DOWN' not in s]
+            top_50 = sorted(symbols, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:50]
 
-        for sym in top_50:
-            if any(t['symbol'] == sym for t in data['active_trades']): continue
-            is_valid, price = check_signal(sym)
-            if is_valid:
-                data['active_trades'].append({"symbol": sym, "entry_price": price, "date": str(datetime.now())})
-                save_data(data)
-                send_telegram(f"📥 *دخول جديد:* `{sym}` بسعر `{price}`")
+            for sym in top_50:
+                # التأكد أن العملة ليست مفتوحة مسبقاً
+                if any(t['symbol'] == sym for t in active_trades):
+                    continue
+                
+                is_valid, price, rsi_val = check_signal(sym)
+                if is_valid:
+                    # 3. تنبيه عند وجود صفقة
+                    active_trades.append({"symbol": sym, "entry_price": price})
+                    save_active_trades(active_trades)
+                    
+                    msg = (f"📥 *صفقة جديدة مكتشفة! (New Entry)*\n\n"
+                           f"📊 العملة: `{sym}`\n"
+                           f"💵 سعر الدخول: `{price}`\n"
+                           f"📈 مؤشر RSI: `{rsi_val:.2f}`\n"
+                           f"⏰ الوقت: `{datetime.now().strftime('%H:%M')}`")
+                    send_telegram(msg)
+                    
+        except Exception as e:
+            print(f"خطأ أثناء المسح: {e}")
 
-        if datetime.now().hour == 23: daily_report()
+        # فحص كل 10 دقائق (600 ثانية)
         time.sleep(600)
 
 if __name__ == "__main__":
