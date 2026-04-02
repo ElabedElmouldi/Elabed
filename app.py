@@ -10,7 +10,7 @@ import os
 
 # --- بياناتك التي تعمل على VS Code ---
 TOKEN = 8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68ا"
-CHAT_ID = "5067771509
+CHAT_ID = "5067771509"
 # --- إعدادات التلغرام ---
 
 
