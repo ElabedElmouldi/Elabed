@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 # إعدادات الحساب (يفضل وضعها في Environment Variables في Render)
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "ضـع_الشات_آيدي_هـنا")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5067771509")
 
 def find_spot_opportunities():
     """استراتيجية البحث عن ارتداد 5% في سوق السبوت"""
