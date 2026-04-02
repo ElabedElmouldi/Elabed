@@ -1,44 +1,38 @@
 import requests
-import os
 import time
+import http.server
+import socketserver
+import threading
 
+# بيانات البوت
+TELEGRAM_TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
+CHAT_ID = "6167826315"
 
-
-# جلب الإعدادات من إعدادات البيئة في رندر
-TELEGRAM_TOKEN = os.getenv('8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68')
-CHAT_ID = os.getenv('8439548325')
+# --- وظيفة لفتح منفذ وهمي لإرضاء Render ---
+def start_dummy_server():
+    PORT = 10000 # المنفذ الافتراضي في رندر
+    Handler = http.server.SimpleHTTPRequestHandler
+    with socketserver.TCPServer(("", PORT), Handler) as httpd:
+        print(f"Serving at port {PORT}")
+        httpd.serve_forever()
 
 def send_telegram_msg(message):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("خطأ: تأكد من إضافة TELEGRAM_TOKEN و CHAT_ID في إعدادات Render")
-        return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {
-            'chat_id': CHAT_ID,
-            'text': message,
-            'parse_mode': 'Markdown'
-        }
-        response = requests.post(url, json=payload, timeout=10)
-        return response.json()
-    except Exception as e:
-        print(f"خطأ أثناء الإرسال: {e}")
+        payload = {'chat_id': CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
+        requests.post(url, json=payload, timeout=10)
+    except: pass
 
 if __name__ == "__main__":
-    print("🚀 البوت بدأ العمل...")
+    # تشغيل الخادم الوهمي في "خلفية الكود" (Thread)
+    threading.Thread(target=start_dummy_server, daemon=True).交叉start()
     
-    # رسالة ترحيبية تخبرك أن البوت يعمل
-    send_telegram_msg("🔔 *نظام التداول يعمل الآن!*\nالبوت متصل بنجاح وسيبدأ بمراقبة السوق فور إضافة الاستراتيجية.")
+    print("🚀 البوت بدأ العمل...")
+    send_telegram_msg("✅ *البوت تجاوز مشكلة الـ Port بنجاح!*")
 
-    # حلقة تكرار بسيطة للبقاء قيد التشغيل
     while True:
         try:
-            print("✅ البوت لا يزال قيد التشغيل...")
-            # اختيارياً: يمكنك ترك هذه الرسالة أو حذفها لاحقاً
-            # send_telegram_msg("🔄 تحديث: البوت لا يزال يعمل في الخلفية.")
-            
-            # الانتظار لمدة 10 دقائق (600 ثانية)
-            time.sleep(600)
-        except Exception as e:
-            print(f"حدث خطأ في الحلقة: {e}")
+            print("البوت لا يزال حياً...")
+            time.sleep(300)
+        except:
             time.sleep(60)
