@@ -8,15 +8,23 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 
-# --- إعدادات التلجرام (تأكد من وضع بياناتك هنا) ---
-TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
-CHAT_ID = "5067771509"
+# --- إعدادات التلجرام للقناة الخاصة ---
+TOKEN = "ضـع_التوكـن_هـنا"
+# الـ ID الخاص بالقناة يجب أن يبدأ بـ -100
+CHANNEL_ID = "ضـع_آيدي_القناة_هنا" 
 
 def send_telegram(message):
+    """إرسال التنبيهات إلى القناة الخاصة"""
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    payload = {
+        "chat_id": CHANNEL_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
     try:
-        requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload, timeout=10)
+        # طباعة الرد في السجلات للتأكد من نجاح الإرسال
+        print(f"Telegram Log: {response.json()}")
     except Exception as e:
         print(f"Telegram Error: {e}")
 
@@ -28,40 +36,33 @@ def calculate_rsi(df, period=14):
     return 100 - (100 / (1 + rs))
 
 def scan_market():
-    print("🔎 جاري فحص أعلى 20 عملة فوليم (RSI 50-60)...")
+    print("🔎 فحص أعلى 20 عملة (Volume) وإرسال النتائج للقناة...")
     try:
         exchange = ccxt.binance()
-        # 1. جلب بيانات جميع العملات مقابل USDT
         tickers = exchange.fetch_tickers()
-        usdt_tickers = [symbol for symbol in tickers if symbol.endswith('/USDT')]
+        usdt_tickers = [s for s in tickers if s.endswith('/USDT')]
         
-        # 2. فرز العملات حسب الفوليم (Quote Volume) واختيار أعلى 20
+        # فرز حسب السيولة (Volume) واختيار أعلى 20
         sorted_tickers = sorted(usdt_tickers, key=lambda x: tickers[x]['quoteVolume'], reverse=True)
-        top_20_symbols = sorted_tickers[:20]
+        top_20 = sorted_tickers[:20]
         
-        found_opportunities = []
-
-        for symbol in top_20_symbols:
-            # جلب شموع 15 دقيقة
+        matches = []
+        for symbol in top_20:
             bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=50)
             df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-            
-            # حساب RSI
             df['RSI'] = calculate_rsi(df)
             last_rsi = df['RSI'].iloc[-1]
             
-            # 3. الشرط المطلوب: RSI بين 50 و 60
+            # شرط RSI بين 50 و 60
             if 50 <= last_rsi <= 60:
-                found_opportunities.append(f"✅ *{symbol.split('/')[0]}* (RSI: {last_rsi:.2f})")
+                matches.append(f"🔸 *{symbol.replace('/USDT', '')}* | RSI: `{last_rsi:.2f}`")
 
-        # 4. إرسال النتائج في رسالة واحدة
-        if found_opportunities:
-            message = "📊 **عملات الـ Volume العالي (RSI 50-60):**\n\n" + "\n".join(found_opportunities)
-            send_telegram(message)
-        else:
-            # اختياري: إرسال رسالة في حال لم يتم العثور على أي عملة تطابق الشرط
-            print("لم يتم العثور على عملات تطابق شروط RSI الحالية.")
-
+        if matches:
+            report = "📢 **تنبيه الرادار (قناة خاصة)**\n"
+            report += "العملات الأكثر سيولة بـ RSI (50-60):\n\n"
+            report += "\n".join(matches)
+            send_telegram(report)
+            
     except Exception as e:
         print(f"Scan Error: {e}")
 
@@ -72,12 +73,11 @@ scheduler.start()
 
 @app.route('/')
 def health():
-    return "Scanner is Running (Top 20 Volume - RSI 50-60)"
+    return "Bot is Broadcasting to Private Channel..."
 
 if __name__ == "__main__":
-    # رسالة ترحيب
-    send_telegram("🚀 تم تفعيل رادار الـ Volume العالي (RSI 50-60).")
-    # تشغيل فحص فوري
+    # رسالة عند التشغيل للتأكد من أن القناة استقبلت البوت
+    send_telegram("🚀 **تم تفعيل البوت بنجاح!**\nبدأ الآن إرسال تقارير السيولة إلى هذه القناة.")
     scan_market()
     
     port = int(os.environ.get("PORT", 10000))
