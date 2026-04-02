@@ -16,23 +16,28 @@ CHAT_ID = "5067771509"
 
 
 exchange = ccxt.binance({'enableRateLimit': True})
+
+
+
+exchange = ccxt.binance({'enableRateLimit': True})
 active_positions = {}
 
 def send_telegram_msg(message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {'chat_id': CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
-        requests.post(url, json=payload, timeout=10)
-    except: pass
+        response = requests.post(url, json=payload, timeout=10)
+        # طباعة النتيجة في رندر للتأكد من وصول الرسالة كاملة
+        print(f"Telegram Log: {response.status_code}")
+    except Exception as e:
+        print(f"Telegram Error: {e}")
 
-# دالة لحساب مدة الصفقة بشكل مقروء
 def get_duration(start_time):
     duration = datetime.now() - start_time
     hours, remainder = divmod(duration.total_seconds(), 3600)
     minutes, _ = divmod(remainder, 60)
-    return f"{int(hours)} ساعة و {int(minutes)} دقيقة"
+    return f"{int(hours)}h {int(minutes)}m"
 
-# --- نظام مراقبة الصفقات المطور ---
 def monitor_positions():
     global active_positions
     for symbol, trade in list(active_positions.items()):
@@ -41,44 +46,33 @@ def monitor_positions():
             current_price = ticker['last']
             entry_price = trade['entry']
             
-            # 1. تأمين الصفقة عند ربح 2.5%
+            # تأمين الصفقة عند ربح 2.5%
             if not trade['secured'] and current_price >= (entry_price * 1.025):
                 trade['sl'] = entry_price
                 trade['secured'] = True
-                send_telegram_msg(f"🛡️ *تأمين صفقة:* `{symbol}`\nوصل الربح لـ `+2.5%`.. تم نقل الوقف للدخول.")
+                send_telegram_msg(f"🛡️ *تأمين:* `{symbol}`\nتم تحريك الوقف للدخول.")
 
-            # 2. الخروج عند الهدف (5%)
+            # الخروج بالهدف
             if current_price >= trade['tp']:
-                duration_str = get_duration(trade['start_time'])
-                profit_percent = ((current_price - entry_price) / entry_price) * 100
-                msg = (f"🎯 *نتيجة خروج: هدف محقق*\n"
-                       f"---------------------------\n"
+                dur = get_duration(trade['start_time'])
+                msg = (f"🎯 *خروج: هدف محقق*\n"
                        f"💰 العملة: `{symbol}`\n"
-                       f"📈 الربح المحقق: `+{profit_percent:.2f}%` 🔥\n"
-                       f"⏱️ مدة الصفقة: `{duration_str}`\n"
-                       f"---------------------------")
+                       f"📈 الربح: `+5.0%`\n"
+                       f"⏱️ المدة: `{dur}`")
                 send_telegram_msg(msg)
                 del active_positions[symbol]
 
-            # 3. الخروج عند الوقف (تأمين أو خسارة)
+            # الخروج بالوقف
             elif current_price <= trade['sl']:
-                duration_str = get_duration(trade['start_time'])
-                result_type = "خروج تعادل (تأمين)" if trade['secured'] else "ضرب وقف الخسارة"
-                loss_percent = ((current_price - entry_price) / entry_price) * 100
-                
-                msg = (f"🛑 *نتيجة خروج: {result_type}*\n"
-                       f"---------------------------\n"
+                dur = get_duration(trade['start_time'])
+                res = "تعادل (تأمين)" if trade['secured'] else "ضرب الوقف"
+                msg = (f"🛑 *خروج: {res}*\n"
                        f"💰 العملة: `{symbol}`\n"
-                       f"📉 النتيجة: `{loss_percent:.2f}%`\n"
-                       f"⏱️ مدة الصفقة: `{duration_str}`\n"
-                       f"---------------------------")
+                       f"⏱️ المدة: `{dur}`")
                 send_telegram_msg(msg)
                 del active_positions[symbol]
-                
-        except Exception as e:
-            print(f"Error monitoring {symbol}: {e}")
+        except: continue
 
-# --- نظام فحص الإشارات ---
 def check_new_signals():
     try:
         tickers = exchange.fetch_tickers()
@@ -91,42 +85,51 @@ def check_new_signals():
             bars = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=100)
             df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             
-            # حساب المؤشرات
-            close = df['close']
-            df['ema200'] = close.ewm(span=200, adjust=False).mean()
-            # RSI
-            delta = close.diff()
+            # المؤشرات الفنية
+            df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
+            # حساب RSI مبسط
+            delta = df['close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
             df['rsi'] = 100 - (100 / (1 + (gain / loss)))
-            # Bollinger Bands
-            sma = close.rolling(window=20).mean()
-            df['mid'] = sma
+            df['mid'] = df['close'].rolling(window=20).mean()
             
             last = df.iloc[-1]
             price = last['close']
             
+            # شروط الاستراتيجية
             if price > last['ema200'] and 40 < last['rsi'] < 65 and price > last['mid']:
+                entry = price
+                tp = entry * 1.05
+                sl = entry * 0.975 # وقف خسارة 2.5%
+                
                 active_positions[symbol] = {
-                    'entry': price,
-                    'tp': price * 1.05,
-                    'sl': price * 0.975, # وقف 2.5%
+                    'entry': entry,
+                    'tp': tp,
+                    'sl': sl,
                     'secured': False,
-                    'start_time': datetime.now() # تسجيل وقت الدخول
+                    'start_time': datetime.now()
                 }
-                send_telegram_msg(f"🚀 *دخول صفقة:* `{symbol}`\nالسعر: `{price}`\nالهدف: `{active_positions[symbol]['tp']:.4f}`")
-    except Exception as e:
-        print(f"Analysis Error: {e}")
+                
+                # الرسالة المعدلة لضمان ظهور وقف الخسارة
+                msg = (f"🚀 *إشارة دخول جديدة*\n\n"
+                       f"💎 *العملة:* `{symbol}`\n"
+                       f"📥 *الدخول:* `{entry:.4f}`\n"
+                       f"🎯 *الهدف:* `{tp:.4f}`\n"
+                       f"🛑 *الوقف:* `{sl:.4f}`\n\n"
+                       f"📊 *RSI:* `{last['rsi']:.1f}`")
+                
+                send_telegram_msg(msg)
+    except: pass
 
 def start_dummy_server():
     port = int(os.environ.get("PORT", 10000))
-    socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("", port), http.server.SimpleHTTPRequestHandler) as httpd:
         httpd.serve_forever()
 
 if __name__ == "__main__":
     threading.Thread(target=start_dummy_server, daemon=True).start()
-    send_telegram_msg("✅ *تحديث النظام:*\nتم تفعيل حساب مدة الصفقات وتحليل نتائج الخروج.")
+    send_telegram_msg("🔄 *تم التحديث:* نظام الإشارات جاهز الآن مع إظهار وقف الخسارة.")
     
     while True:
         check_new_signals()
