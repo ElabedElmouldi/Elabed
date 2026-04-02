@@ -8,6 +8,9 @@ from flask import Flask
 import os
 import threading
 app = Flask(__name__)
+port = int(os.environ.get("PORT", 10000))
+app.run(host='0.0.0.0', port=port)
+
 
 # --- بياناتك التي تعمل على VS Code ---
 TOKEN = 8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68ا"
