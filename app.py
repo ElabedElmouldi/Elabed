@@ -10,8 +10,8 @@ import numpy as np
 app = Flask(__name__)
 
 # --- الإعدادات ---
-TOKEN = os.environ.get("TELEGRAM_TOKEN", "ضعه_هنا")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "ضعه_هنا")
+TOKEN = os.environ.get("TELEGRAM_TOKEN", "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5067771509")
 
 def send_telegram_instant(message):
     """إرسال رسالة فورية باستخدام API التلجرام المباشر (أكثر استقراراً للسيرفرات)"""
