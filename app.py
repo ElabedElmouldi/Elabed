@@ -12,7 +12,7 @@ nest_asyncio.apply()
 app = Flask(__name__)
 
 # إعدادات التلجرام
-TOKEN = os.environ.get("TELEGRAM_TOKEN", "ضـع_التوكـن_هـنا")
+TOKEN = os.environ.get("TELEGRAM_TOKEN", "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "ضـع_الشات_آيدي_هـنا")
 
 # --- دالة حساب RSI يدوياً ---
