@@ -7,6 +7,7 @@ import os
 
 # بيانات البوت الخاصة بك
 TELEGRAM_TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
+
 CHAT_ID = "5067771509"
 
 # وظيفة لفتح منفذ وهمي لإرضاء Render ومنع خطأ الـ Port Scan
