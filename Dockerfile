@@ -1,23 +1,18 @@
-
-# استخدام نسخة خفيفة ومستقرة من بايثون
 FROM python:3.10-slim
 
-# تحديد مجلد العمل داخل الحاوية
 WORKDIR /app
 
-# تثبيت الأدوات اللازمة للنظام (اختياري لضمان استقرار المكتبات)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# إضافة أدوات البناء الضرورية لـ pandas و numpy
+RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# نسخ ملف المتطلبات أولاً للاستفادة من الـ Caching
-COPY requirements.txt .
+# تحديث pip قبل كل شيء
+RUN pip install --upgrade pip
 
-# تثبيت المكتبات البرمجية
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# نسخ ملف الكود الأساسي وبقية الملفات
 COPY . .
 
-# الأمر النهائي لتشغيل البوت
 CMD ["python", "app.py"]
