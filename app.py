@@ -1,82 +1,172 @@
+
 import pandas as pd
-import numpy as np
+import pandas_ta as ta
 import requests
 import time
-import threading
 import os
-from flask import Flask
-import os
-import threading
-app = Flask(__name__)
-port = int(os.environ.get("PORT", 10000))
-app.run(host='0.0.0.0', port=port)
-
 
 # --- بياناتك التي تعمل على VS Code ---
 TOKEN = 8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68ا"
 CHAT_ID = "5067771509"
-BASE_URL = "https://api1.binance.com"
 
+active_trades = {} 
 
 def send_telegram_msg(message):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {'chat_id': CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
     try:
-        requests.post(url, json=payload, timeout=10)
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={CHAT_ID}&text={message}&parse_mode=Markdown"
+        requests.get(url, timeout=10)
+    except Exception as e:
+        print(f"Telegram Error: {e}")
+
+exchange = ccxt.binance({'enableRateLimit': True})
+
+def get_top_volume_symbols(limit=25):
+    try:
+        tickers = exchange.fetch_tickers()
+        usdt_symbols = [s for s in tickers if s.endswith('/USDT') and 'UP/' not in s and 'DOWN/' not in s]
+        sorted_symbols = sorted(usdt_symbols, key=lambda x: tickers[x]['quoteVolume'], reverse=True)
+        return sorted_symbols[:limit]
+    except: return []
+
+def monitor_active_trades():
+    global active_trades
+    for symbol, trade in list(active_trades.items()):
+        try:
+            ticker = exchange.fetch_ticker(symbol)
+            current_price = ticker['last']
+            if not trade['is_secured'] and current_price >= (trade['entry'] * 1.025):
+                trade['sl'] = trade['entry']
+                trade['is_secured'] = True
+                send_telegram_msg(f"🛡️ *تأمين:* `{symbol}` وصل لـ `+2.5%`.. الوقف عند الدخول.")
+            if current_price >= trade['tp']:
+                send_telegram_msg(f"🎯 *هدف محقق!* `{symbol}` ربح `+5.0%` 🔥")
+                del active_trades[symbol]
+            elif current_price <= trade['sl']:
+                status = "تعادل" if trade['is_secured'] else "خسارة"
+                send_telegram_msg(f"🛑 *خروج:* `{symbol}` ({status})")
+                del active_trades[symbol]
+        except: continue
+
+def analyze_signal(symbol):
+    global active_trades
+    if symbol in active_trades: return 
+    try:
+        bars = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=210)
+        df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['ema200'] = ta.ema(df['close'], length=200)
+        df['ema21'] = ta.ema(df['close'], length=21)
+        df['ema9'] = ta.ema(df['close'], length=9)
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        current_price = last['close']
+        
+        is_bullish = current_price > last['ema200']
+        crossover = (prev['ema9'] <= prev['ema21']) and (last['ema9'] > last['ema21'])
+        vol_avg = df['volume'].rolling(20).mean().iloc[-1]
+        volume_confirmed = last['volume'] > (vol_avg * 1.5)
+        dist = ((current_price - last['ema21']) / last['ema21']) * 100
+
+        if is_bullish and crossover and volume_confirmed and dist <= 2.5:
+            entry = current_price
+            active_trades[symbol] = {'entry': entry, 'tp': entry * 1.05, 'sl': max(last['ema21'], entry * 0.97), 'is_secured': False}
+            send_telegram_msg(f"🚀 *إشارة:* `{symbol}`\nدخول: `{entry}`\nهدف: `{active_trades[symbol]['tp']}`\nمسافة: `{dist:.2f}%`")
     except: pass
 
-def get_data(symbol):
-    """جلب بيانات الشموع (فريم ساعة لصفقات السبوت)"""
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage" # مثال للربط، استخدم Binance API فعلياً هنا
-    params = {'symbol': symbol, 'interval': '1h', 'limit': 100}
-    res = requests.get("https://api.binance.com/api/v3/klines", params=params).json()
-    df = pd.DataFrame(res, columns=['time', 'open', 'high', 'low', 'close', 'vol', 'close_time', 'q_vol', 'trades', 't_base', 't_quote', 'ignore'])
-    return df.astype(float)
+print("⚙️ البوت يعمل بنظام الحاوية (Docker)...")
+while True:
+    try:
+        symbols = get_top_volume_symbols(25)
+        for sym in symbols:
+            analyze_signal(sym)
+            time.sleep(1)
+        monitor_active_trades()
+        time.sleep(60)
+    except Exception as e:
+        time.sleep(30)
 
-def scanner_engine():
-    send_telegram_msg("🚀 رادار السبوت يعمل الآن.. جاري صيد أهداف 5% و 10% 💎")
-    
-    while True:
+import ccxt
+import pandas as pd
+import pandas_ta as ta
+import requests
+import time
+import os
+
+# --- إعدادات التلغرام (يفضل استخدام Environment Variables في رندر) ---
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', 'YOUR_BOT_TOKEN')
+CHAT_ID = os.getenv('CHAT_ID', 'YOUR_CHAT_ID')
+
+active_trades = {} 
+
+def send_telegram_msg(message):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={CHAT_ID}&text={message}&parse_mode=Markdown"
+        requests.get(url, timeout=10)
+    except Exception as e:
+        print(f"Telegram Error: {e}")
+
+exchange = ccxt.binance({'enableRateLimit': True})
+
+def get_top_volume_symbols(limit=25):
+    try:
+        tickers = exchange.fetch_tickers()
+        usdt_symbols = [s for s in tickers if s.endswith('/USDT') and 'UP/' not in s and 'DOWN/' not in s]
+        sorted_symbols = sorted(usdt_symbols, key=lambda x: tickers[x]['quoteVolume'], reverse=True)
+        return sorted_symbols[:limit]
+    except: return []
+
+def monitor_active_trades():
+    global active_trades
+    for symbol, trade in list(active_trades.items()):
         try:
-            # جلب أفضل 30 عملة سيولة (Spot)
-            r = requests.get("https://api.binance.com/api/v3/ticker/24hr").json()
-            symbols = [i['symbol'] for i in sorted(r, key=lambda x: float(x['quoteVolume']), reverse=True) if i['symbol'].endswith('USDT')][:30]
-            
-            for symbol in symbols:
-                df = get_data(symbol)
-                # حساب EMA 100 كفلتر اتجاه صاعد للسبوت
-                df['ema100'] = df['close'].ewm(span=100).mean()
-                last = df.iloc[-1]
-                
-                # شرط الدخول: السعر فوق المتوسط + فوليوم عالي + شمعة خضراء
-                if last['close'] > last['ema100'] and last['vol'] > df['vol'].mean() * 1.3:
-                    entry = float(last['close'])
-                    tp5 = entry * 1.05
-                    tp10 = entry * 1.10
-                    stop = entry * 0.95 # وقف 5% لحماية رأس المال
-                    
-                    msg = (
-                        f"💰 **فرصة سبوت جديدة: {symbol}**\n\n"
-                        f"📊 سعر الدخول الحالي: `{entry:.4f}`\n"
-                        f"📈 هدف أول (+5%): `{tp5:.4f}`\n"
-                        f"🚀 هدف ثاني (+10%): `{tp10:.4f}`\n"
-                        f"🛑 وقف الخسارة: `{stop:.4f}`\n\n"
-                        f"💡 *نصيحة: يمكنك بيع نصف الكمية عند 5% وترك الباقي للـ 10%*"
-                    )
-                    send_telegram_msg(msg)
-                    time.sleep(2) # تجنب الحظر
+            ticker = exchange.fetch_ticker(symbol)
+            current_price = ticker['last']
+            if not trade['is_secured'] and current_price >= (trade['entry'] * 1.025):
+                trade['sl'] = trade['entry']
+                trade['is_secured'] = True
+                send_telegram_msg(f"🛡️ *تأمين:* `{symbol}` وصل لـ `+2.5%`.. الوقف عند الدخول.")
+            if current_price >= trade['tp']:
+                send_telegram_msg(f"🎯 *هدف محقق!* `{symbol}` ربح `+5.0%` 🔥")
+                del active_trades[symbol]
+            elif current_price <= trade['sl']:
+                status = "تعادل" if trade['is_secured'] else "خسارة"
+                send_telegram_msg(f"🛑 *خروج:* `{symbol}` ({status})")
+                del active_trades[symbol]
+        except: continue
 
-            print("✅ دورة فحص كاملة انتهت..")
-            time.sleep(3600) # فحص كل ساعة (مناسب جداً للسبوت)
-        except Exception as e:
-            print(f"Error: {e}")
-            time.sleep(60)
+def analyze_signal(symbol):
+    global active_trades
+    if symbol in active_trades: return 
+    try:
+        bars = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=210)
+        df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['ema200'] = ta.ema(df['close'], length=200)
+        df['ema21'] = ta.ema(df['close'], length=21)
+        df['ema9'] = ta.ema(df['close'], length=9)
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        current_price = last['close']
+        
+        is_bullish = current_price > last['ema200']
+        crossover = (prev['ema9'] <= prev['ema21']) and (last['ema9'] > last['ema21'])
+        vol_avg = df['volume'].rolling(20).mean().iloc[-1]
+        volume_confirmed = last['volume'] > (vol_avg * 1.5)
+        dist = ((current_price - last['ema21']) / last['ema21']) * 100
 
-@app.route('/')
-def home():
-    return "✅ Spot Trading Bot is Active..."
+        if is_bullish and crossover and volume_confirmed and dist <= 2.5:
+            entry = current_price
+            active_trades[symbol] = {'entry': entry, 'tp': entry * 1.05, 'sl': max(last['ema21'], entry * 0.97), 'is_secured': False}
+            send_telegram_msg(f"🚀 *إشارة:* `{symbol}`\nدخول: `{entry}`\nهدف: `{active_trades[symbol]['tp']}`\nمسافة: `{dist:.2f}%`")
+    except: pass
 
-if __name__ == "__main__":
-    threading.Thread(target=scanner_engine, daemon=True).start()
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+print("⚙️ البوت يعمل بنظام الحاوية (Docker)...")
+while True:
+    try:
+        symbols = get_top_volume_symbols(25)
+        for sym in symbols:
+            analyze_signal(sym)
+            time.sleep(1)
+        monitor_active_trades()
+        time.sleep(60)
+    except Exception as e:
+        time.sleep(30)
+
