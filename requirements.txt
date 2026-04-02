@@ -1,5 +1,6 @@
-ccxt
-pandas
-requests
+
 flask
 gunicorn
+ccxt
+python-telegram-bot
+pandas
