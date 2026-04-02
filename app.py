@@ -77,11 +77,22 @@ def home():
     return "البوت يعمل ويقوم بمسح السوق كل 15 دقيقة."
 
 if __name__ == "__main__":
-    # 1. إرسال رسالة فورية عند تشغيل البوت
-    asyncio.run(send_msg("🤖 **تم تشغيل البوت بنجاح!**\nجاري الآن مسح السوق كل 15 دقيقة للبحث عن أفضل الصفقات..."))
+    # الحصول على المنفذ (Port)
+    port = int(os.environ.get("PORT", 10000))
     
-    # 2. تشغيل أول عملية فحص فوراً
+    # 1. إرسال رسالة تجريبية فورية عند بدء التشغيل للتأكد من الربط
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        bot = telegram.Bot(token=TOKEN)
+        loop.run_until_complete(bot.send_message(chat_id=CHAT_ID, text="🚀 تم ربط البوت بالسيرفر بنجاح! جاري فحص الصفقات..."))
+        print("✅ Welcome message sent!")
+    except Exception as e:
+        print(f"❌ Failed to send welcome message: {e}")
+
+    # 2. تشغيل أول فحص للسوق يدوياً
     analyze_market()
     
-    port = int(os.environ.get("PORT", 10000))
+    # 3. تشغيل سيرفر Flask
     app.run(host='0.0.0.0', port=port)
+
