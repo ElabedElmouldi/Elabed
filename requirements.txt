@@ -2,5 +2,4 @@ ccxt
 pandas
 pandas_ta
 requests
-json
-os
+
