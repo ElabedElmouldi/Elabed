@@ -15,121 +15,166 @@ TELEGRAM_TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 CHAT_ID = "-1003692815602"
 
 
-# إعداد المنصة
+# إعداد المنصة (Binance)
 exchange = ccxt.binance()
 
-# ملف لتخزين البيانات
-DATA_FILE = 'trades_data.json'
+# ملف JSON لحفظ حالة الصفقات لضمان عدم ضياع البيانات عند إغلاق البرنامج
+DATA_FILE = 'trading_data.json'
 
 def load_data():
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'r') as f:
-            return json.load(f)
+        try:
+            with open(DATA_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            pass
     return {"active_trades": [], "completed_trades": [], "last_report_date": ""}
 
 def save_data(data):
     with open(DATA_FILE, 'w') as f:
         json.dump(data, f, indent=4)
 
-def send_telegram_msg(message):
+def send_telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    requests.post(url, data=payload)
+    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    try:
+        requests.post(url, data=payload)
+    except Exception as e:
+        print(f"خطأ في الإرسال للتلغرام: {e}")
 
 def get_current_price(symbol):
-    ticker = exchange.fetch_ticker(symbol)
-    return ticker['last']
+    return exchange.fetch_ticker(symbol)['last']
 
-def update_trades_status():
+def check_signal(symbol):
+    """تحليل العملة: اختراق البولينجر العلوي + RSI > 60"""
+    try:
+        bars = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=50)
+        df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+        
+        # حساب المؤشرات
+        bb = ta.bbands(df['c'], length=20, std=2)
+        df['RSI'] = ta.rsi(df['c'], length=14)
+        
+        last_c = df['c'].iloc[-1]
+        prev_c = df['c'].iloc[-2]
+        upper_bb = bb['BBU_20_2.0'].iloc[-1]
+        prev_upper = bb['BBU_20_2.0'].iloc[-2]
+        current_rsi = df['RSI'].iloc[-1]
+
+        # شرط الدخول: اختراق الخط العلوي للبولينجر مع زخم RSI
+        if last_c > upper_bb and prev_c <= prev_upper and current_rsi > 60:
+            return True, last_c
+    except:
+        pass
+    return False, 0
+
+def monitor_active_trades():
+    """تحديث حالة الصفقات المفتوحة ومراقبة الربح/الخسارة"""
     data = load_data()
     updated_active = []
     
     for trade in data['active_trades']:
         try:
-            current_price = get_current_price(trade['symbol'])
-            price_change = ((current_price - trade['entry_price']) / trade['entry_price']) * 100
+            current_p = get_current_price(trade['symbol'])
+            change = ((current_p - trade['entry_price']) / trade['entry_price']) * 100
             
-            # تحديث النتيجة إذا تحقق الهدف أو الوقف
-            if price_change >= 5.0:
-                trade['status'] = '✅ ربح (Target hit)'
-                trade['exit_price'] = current_price
-                trade['result'] = "+5%"
+            # 1. هدف الربح 5%
+            if change >= 5.0:
+                trade['exit_price'] = current_p
+                trade['result'] = "✅ +5.0%"
+                trade['close_time'] = str(datetime.now())
                 data['completed_trades'].append(trade)
-            elif price_change <= -2.5:
-                trade['status'] = '❌ خسارة (Stop hit)'
-                trade['exit_price'] = current_price
-                trade['result'] = "-2.5%"
+                send_telegram(f"🎯 *تم تحقيق الهدف (5%)!*\nالعملة: `{trade['symbol']}`\nسعر الخروج: `{current_p}`")
+            
+            # 2. وقف الخسارة 2.5%
+            elif change <= -2.5:
+                trade['exit_price'] = current_p
+                trade['result'] = "❌ -2.5%"
+                trade['close_time'] = str(datetime.now())
                 data['completed_trades'].append(trade)
+                send_telegram(f"🛑 *ضرب وقف الخسارة (-2.5%)*\nالعملة: `{trade['symbol']}`\nسعر الخروج: `{current_p}`")
+            
             else:
-                updated_active.append(trade) # لا تزال مفتوحة
+                # الصفقة لا تزال مفتوحة
+                updated_active.append(trade)
         except:
             updated_active.append(trade)
-            
+
     data['active_trades'] = updated_active
     save_data(data)
 
-def send_daily_report():
+def send_daily_summary():
+    """إرسال التقرير اليومي الشامل"""
     data = load_data()
     today = datetime.now().strftime('%Y-%m-%d')
     
     if data['last_report_date'] == today:
-        return # تم إرسال التقرير اليوم بالفعل
+        return
 
-    report = f"📋 *التقرير اليومي للصفقات - {today}*\n\n"
+    summary = f"📋 *تقرير التداول اليومي - {today}*\n\n"
     
-    # 1. الصفقات المكتملة اليوم
-    report += "✅ *الصفقات المنتهية:* \n"
+    # الصفقات التي أغلقت اليوم
+    summary += "✅ *الصفقات المكتملة اليوم:*\n"
     if not data['completed_trades']:
-        report += "- لا توجد صفقات منتهية بعد.\n"
+        summary += "_لا توجد صفقات منتهية_\n"
     for t in data['completed_trades']:
-        report += f"• `{t['symbol']}` | النتيجة: *{t['result']}*\n"
+        summary += f"• `{t['symbol']}` ⬅️ {t['result']}\n"
     
-    # 2. الصفقات المفتوحة حالياً
-    report += "\n⏳ *الصفقات المفتوحة:* \n"
+    # الصفقات التي لا تزال مفتوحة
+    summary += "\n⏳ *الصفقات المفتوحة حالياً:*\n"
     if not data['active_trades']:
-        report += "- لا توجد صفقات مفتوحة.\n"
+        summary += "_لا توجد صفقات مفتوحة_\n"
     for t in data['active_trades']:
         curr_p = get_current_price(t['symbol'])
         p_diff = ((curr_p - t['entry_price']) / t['entry_price']) * 100
-        report += f"• `{t['symbol']}` | الربح الحالي: `{p_diff:.2f}%`\n"
+        summary += f"• `{t['symbol']}` | ربح/خسارة: `{p_diff:.2f}%`\n"
 
-    send_telegram_msg(report)
+    send_telegram(summary)
     
-    # تفريغ الصفقات المنتهية لليوم القادم وتحديث تاريخ التقرير
+    # تصفير القائمة المنتهية لليوم الجديد وتحديث التاريخ
     data['completed_trades'] = []
     data['last_report_date'] = today
     save_data(data)
 
-def run_scanner():
-    data = load_data()
-    # جلب أفضل 50 عملة
-    markets = exchange.fetch_tickers()
-    symbols = [s for s in markets if '/USDT' in s and 'UP' not in s and 'DOWN' not in s]
-    sorted_symbols = sorted(symbols, key=lambda x: markets[x]['quoteVolume'], reverse=True)[:50]
-
-    for symbol in sorted_symbols:
-        # منع الدخول في عملة مفتوحة حالياً أو دخلنا فيها اليوم
-        if any(t['symbol'] == symbol for t in data['active_trades']):
-            continue
-
-        # (نفس دالة التحليل السابقة analyze_signal تضاف هنا)
-        # إذا تحقق الشرط:
-        # entry_p = get_current_price(symbol)
-        # new_trade = {"symbol": symbol, "entry_price": entry_p, "time": str(datetime.now())}
-        # data['active_trades'].append(new_trade)
-        # send_telegram_msg(f"🚀 دخول صفقة جديدة: {symbol} بسعر {entry_p}")
+def main():
+    send_telegram("🤖 *تم تشغيل البوت المطور بنجاح... جاري مراقبة السوق!*")
     
-    save_data(data)
-
-# دورة العمل الرئيسية
-while True:
-    update_trades_status() # تحديث حالة الصفقات المفتوحة
-    run_scanner()          # البحث عن فرص جديدة
-    
-    # إرسال التقرير في وقت محدد (مثلاً الساعة 11 مساءً)
-    if datetime.now().hour == 23:
-        send_daily_report()
+    while True:
+        # 1. تحديث ومراقبة الصفقات المفتوحة حالياً
+        monitor_active_trades()
         
-    time.sleep(900) # فحص كل 15 دقيقة
+        # 2. البحث عن فرص جديدة (أفضل 50 عملة)
+        data = load_data()
+        try:
+            tickers = exchange.fetch_tickers()
+            symbols = [s for s in tickers if '/USDT' in s and 'UP' not in s and 'DOWN' not in s]
+            top_50 = sorted(symbols, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:50]
 
+            for sym in top_50:
+                # لا تدخل في عملة مفتوحة حالياً
+                if any(t['symbol'] == sym for t in data['active_trades']):
+                    continue
+                
+                is_valid, entry_p = check_signal(sym)
+                if is_valid:
+                    new_trade = {
+                        "symbol": sym, 
+                        "entry_price": entry_p, 
+                        "start_time": str(datetime.now())
+                    }
+                    data['active_trades'].append(new_trade)
+                    save_data(data)
+                    send_telegram(f"📥 *دخول صفقة جديدة:*\nالعملة: `{sym}`\nسعر الدخول: `{entry_p}`")
+        except Exception as e:
+            print(f"خطأ في مسح السوق: {e}")
+
+        # 3. إرسال التقرير اليومي (الساعة 11 مساءً بتوقيتك)
+        if datetime.now().hour == 23:
+            send_daily_summary()
+
+        print(f"دورة فحص مكتملة في {datetime.now().strftime('%H:%M:%S')}")
+        time.sleep(600) # فحص كل 10 دقائق
+
+if __name__ == "__main__":
+    main()
 
