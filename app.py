@@ -12,7 +12,7 @@ app = Flask(__name__)
 # --- بياناتك الخاصة ---
 # يفضل دائماً وضعها في إعدادات Render (Environment Variables) للأمان
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "ضـع_الشات_آيدي_هـنا")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5067771509")
 # --------------------
 
 async def send_welcome_msg():
