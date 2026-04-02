@@ -8,25 +8,36 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 
-# --- إعدادات التلجرام ---
+# --- إعدادات التلجرام للمجموعة ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
-MY_CHAT_ID = "5067771509"
 
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": MY_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    try:
-        requests.post(url, json=payload, timeout=10)
-    except:
-        pass
+# أضف هنا أرقام الـ ID الخاصة بأصدقائك (تأكد أن كل صديق قد ضغط Start للبوت)
+FRIENDS_IDS = [
+    "5067771509", # الـ ID الخاص بك
+    "2107567005", # الـ ID الصديق الأول
+
+]
+
+def send_to_all_friends(message):
+    """إرسال الرسالة لكل شخص في القائمة"""
+    for chat_id in FRIENDS_IDS:
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "Markdown"
+        }
+        try:
+            requests.post(url, json=payload, timeout=10)
+        except Exception as e:
+            print(f"Error sending to {chat_id}: {e}")
 
 def scan_for_explosion():
-    print("🚀 جاري البحث عن صفقات الانفجار (الهدف 6%)...")
+    print("🚀 جاري فحص السوق وإرسال الصفقات للأصدقاء...")
     try:
         exchange = ccxt.binance()
         tickers = exchange.fetch_tickers()
         symbols = [s for s in tickers if s.endswith('/USDT')]
-        # فحص أعلى 30 عملة سيولة
         sorted_symbols = sorted(symbols, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:30]
         
         for symbol in sorted_symbols:
@@ -49,26 +60,25 @@ def scan_for_explosion():
             
             last = df.iloc[-1]
             
-            # --- شروط الصفقة ---
-            # انضغاط أقل من 2% و RSI في منطقة قوة (50-60)
+            # شروط الصفقة (RSI 50-60 وانضغاط < 2%)
             if last['Width'] < 2.0 and 50 <= last['RSI'] <= 60:
-                entry_price = last['c']
-                target_price = entry_price * 1.06  # هدف 6%
-                stop_loss = entry_price * 0.97    # وقف 3%
+                entry = last['c']
+                target = entry * 1.06
+                stop = entry * 0.97
                 
                 name = symbol.replace('/USDT', '')
                 msg = (
-                    f"⚡️ **إشارة انفجار سعري قادمة**\n"
+                    f"⚡️ **توصية انفجار سعري جديدة**\n"
                     f"العملة: #{name}\n\n"
-                    f"📥 **سعر الدخول:** `{entry_price:.4f}`\n"
-                    f"🎯 **الهدف (6%+):** `{target_price:.4f}`\n"
-                    f"🛑 **وقف الخسارة (3%-):** `{stop_loss:.4f}`\n\n"
+                    f"📥 **سعر الدخول:** `{entry:.4f}`\n"
+                    f"🎯 **الهدف (6%+):** `{target:.4f}`\n"
+                    f"🛑 **وقف الخسارة (3%-):** `{stop:.4f}`\n\n"
                     f"📊 RSI: {last['RSI']:.2f} | الضغط: {last['Width']:.2f}%"
                 )
-                send_telegram(msg)
+                send_to_all_friends(msg)
                 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Scan Error: {e}")
 
 # المجدول الزمني كل 15 دقيقة
 scheduler = BackgroundScheduler(daemon=True)
@@ -77,10 +87,11 @@ scheduler.start()
 
 @app.route('/')
 def home():
-    return "Bot is Active - Strategy: 6% Target / 3% Stop"
+    return "<h1>البوت يرسل الصفقات لجميع الأصدقاء المضافين!</h1>"
 
 if __name__ == "__main__":
-    send_telegram("🚀 **تم تشغيل رادار الصفقات المطور!**\nسأرسل لك نقاط الدخول والخروج بدقة.")
-    scan_for_explosion()
+    send_to_all_friends("🚀 **البوت يعمل الآن!**\nسيتم إرسال الصفقات لجميع المشتركين في هذه القائمة.")
+    scan_market = scan_for_explosion()
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
