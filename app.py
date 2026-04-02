@@ -75,24 +75,29 @@ scheduler.start()
 @app.route('/')
 def home():
     return "البوت يعمل ويقوم بمسح السوق كل 15 دقيقة."
-
 if __name__ == "__main__":
-    # الحصول على المنفذ (Port)
+    # الحصول على المنفذ
     port = int(os.environ.get("PORT", 10000))
     
-    # 1. إرسال رسالة تجريبية فورية عند بدء التشغيل للتأكد من الربط
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        bot = telegram.Bot(token=TOKEN)
-        loop.run_until_complete(bot.send_message(chat_id=CHAT_ID, text="🚀 تم ربط البوت بالسيرفر بنجاح! جاري فحص الصفقات..."))
-        print("✅ Welcome message sent!")
-    except Exception as e:
-        print(f"❌ Failed to send welcome message: {e}")
+    # وظيفة لإرسال رسالة اختبار فورية عند التشغيل
+    async def startup_test():
+        try:
+            bot = telegram.Bot(token=TOKEN)
+            await bot.send_message(chat_id=CHAT_ID, text="📢 نظام الرادار متصل الآن ويعمل في الخلفية...")
+            print("✅ Test message sent successfully!")
+        except Exception as e:
+            print(f"❌ Critical Error: {e}")
 
-    # 2. تشغيل أول فحص للسوق يدوياً
+    # تشغيل الاختبار الفوري
+    try:
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(startup_test())
+    except Exception as e:
+        print(f"Loop Error: {e}")
+
+    # تشغيل أول عملية فحص للسوق
     analyze_market()
     
-    # 3. تشغيل سيرفر Flask
+    # بدء تشغيل Flask
     app.run(host='0.0.0.0', port=port)
-
+   
