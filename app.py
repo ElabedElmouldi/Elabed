@@ -9,9 +9,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 app = Flask(__name__)
 
 # --- إعدادات التلجرام للقناة الخاصة ---
-TOKEN = "ضـع_التوكـن_هـنا"
+TOKEN = "> Dream Agency:8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68
+"
 # الـ ID الخاص بالقناة يجب أن يبدأ بـ -100
-CHANNEL_ID = "ضـع_آيدي_القناة_هنا" 
+CHANNEL_ID = "1003692815602" 
 
 def send_telegram(message):
     """إرسال التنبيهات إلى القناة الخاصة"""
