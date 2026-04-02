@@ -13,7 +13,7 @@ app = Flask(__name__)
 
 # إعدادات التلجرام
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "ضـع_الشات_آيدي_هـنا")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5067771509")
 
 # --- دالة حساب RSI يدوياً ---
 def calculate_rsi(data, window=14):
