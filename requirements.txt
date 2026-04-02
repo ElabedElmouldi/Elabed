@@ -1,4 +1,4 @@
-ccxt
-pandas
-https://github.com/twopirllc/pandas-ta/archive/refs/heads/master.zip
-requests
+ccxt>=4.0.0
+pandas>=1.5.0
+pandas-ta>=0.3.14b0
+requests>=2.28.0
