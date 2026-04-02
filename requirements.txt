@@ -1,6 +1,6 @@
 flask
 gunicorn
-python-telegram-bot
+python-telegram-bot>=20.0
 nest-asyncio
 ccxt
 pandas
