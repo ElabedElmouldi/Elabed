@@ -2,9 +2,11 @@ import requests
 import os
 import time
 
+
+
 # جلب الإعدادات من إعدادات البيئة في رندر
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-CHAT_ID = os.getenv('CHAT_ID')
+TELEGRAM_TOKEN = os.getenv('8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68')
+CHAT_ID = os.getenv('8439548325')
 
 def send_telegram_msg(message):
     if not TELEGRAM_TOKEN or not CHAT_ID:
