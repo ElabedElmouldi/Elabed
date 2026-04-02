@@ -9,7 +9,7 @@ app = Flask(__name__)
 TOKEN = "> Dream Agency:
 8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68
 "
-CHAT_ID = "ضع_الشات_آيدي_الخاص_بك_هنا"
+CHAT_ID = "5067771509"
 # ----------------------------
 
 async def send_welcome():
