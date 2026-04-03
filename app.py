@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # --- الإعدادات الآمنة (Environment Variables) ---
-TOKEN = os.getenv("TELEGRAM_TOKEN")
+TOKEN = os.getenv("8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68")
 FRIENDS_IDS_RAW = os.getenv("FRIENDS_IDS", "")
 FRIENDS_IDS = [fid.strip() for fid in FRIENDS_IDS_RAW.split(",") if fid.strip()]
 APP_URL = os.getenv("APP_URL") # ضع رابط تطبيقك هنا (مثال: https://fast-lane-bot.onrender.com)
