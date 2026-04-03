@@ -16,7 +16,7 @@ TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = [
     "5067771509", # الـ ID الخاص بك
     "2107567005", # الـ ID الصديق الأول
-
+]
 # قائمة العملات المستقرة والعملات غير المرغوبة لاستبعادها
 STABLE_COINS = [
     'USDT', 'USDC', 'BUSD', 'DAI', 'TUSD', 'USDP', 'USDD', 
