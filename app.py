@@ -13,7 +13,7 @@ app = Flask(__name__)
 
 # --- الإعدادات الشخصية ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
-FRIENDS_IDS = ["5067771509", "-1003692815602"]
+FRIENDS_IDS = ["5067771509", "2107567005"]
 RENDER_URL = "https://your-app-name.onrender.com" # ⚠️ استبدله برابط تطبيقك في Render
 
 # سجل الصفقات المؤقت (سيتم مسحه عند إعادة تشغيل السيرفر)
