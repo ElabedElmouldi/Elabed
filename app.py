@@ -114,17 +114,18 @@ def scan_market():
                         send_telegram(msg)
             except: continue
     except Exception as e: print(f"Error: {e}")
+دقائق
 
-# --- دالة التفعيل الذاتي (Keep Alive) ---
 def keep_alive():
-    """منع Render من النوم عن طريق مناداة الرابط كل 10 دقائق"""
     while True:
         try:
-            requests.get(RENDER_URL, timeout=10)
-            print("💓 نبض التفعيل الذاتي: البوت مستيقظ.")
-        except:
-            print("⚠️ تنبيه: فشل الاتصال الذاتي.")
-        time.sleep(600) # 10 دقائق
+            # استخدام رأس (header) لمحاكاة متصفح حقيقي
+            requests.get(RENDER_URL, headers={'User-Agent': 'Mozilla/5.0'}, timeout=20)
+            print("💓 Heartbeat sent successfully")
+        except Exception as e:
+            print(f"⚠️ Heartbeat failed: {e}")
+        time.sleep(300) # فحص كل 5 دقائق بدلاً من 10
+
 
 # --- المجدول الزمني ---
 scheduler = BackgroundScheduler(daemon=True)
