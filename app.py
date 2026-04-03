@@ -1,4 +1,7 @@
-import os
+
+
+
+]import os
 import requests
 import ccxt
 import pandas as pd
@@ -16,10 +19,10 @@ FRIENDS_IDS = [
     "5067771509", # الـ ID الخاص بك
     "2107567005", # الـ ID الصديق الأول
 
-]
+
 
 def send_to_all_friends(message):
-    """إرسال الرسالة لكل شخص في القائمة"""
+    """إرسال التنبيه لكل الأصدقاء في القائمة"""
     for chat_id in FRIENDS_IDS:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         payload = {
@@ -32,66 +35,91 @@ def send_to_all_friends(message):
         except Exception as e:
             print(f"Error sending to {chat_id}: {e}")
 
-def scan_for_explosion():
-    print("🚀 جاري فحص السوق وإرسال الصفقات للأصدقاء...")
+def scan_mega_explosion():
+    print("🔎 جاري فحص عملات 'النطاق الذهبي' للانفجار +10%...")
     try:
         exchange = ccxt.binance()
+        # جلب بيانات جميع العملات مقابل USDT
         tickers = exchange.fetch_tickers()
-        symbols = [s for s in tickers if s.endswith('/USDT')]
-        sorted_symbols = sorted(symbols, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:30]
         
-        for symbol in sorted_symbols:
-            bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=50)
-            df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+        # تصفية العملات النشطة مقابل USDT
+        symbols = [s for s in tickers if s.endswith('/USDT')]
+        
+        for symbol in symbols:
+            ticker = tickers[symbol]
+            daily_volume = ticker['quoteVolume']
             
-            # حساب RSI
-            delta = df['c'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-            rs = gain / (loss + 1e-9)
-            df['RSI'] = 100 - (100 / (1 + rs))
-            
-            # حساب انضغاط البولنجر
-            df['MA20'] = df['c'].rolling(20).mean()
-            df['STD'] = df['c'].rolling(20).std()
-            df['Upper'] = df['MA20'] + (df['STD'] * 2)
-            df['Lower'] = df['MA20'] - (df['STD'] * 2)
-            df['Width'] = (df['Upper'] - df['Lower']) / df['MA20'] * 100
-            
-            last = df.iloc[-1]
-            
-            # شروط الصفقة (RSI 50-60 وانضغاط < 2%)
-            if last['Width'] < 2.0 and 50 <= last['RSI'] <= 60:
-                entry = last['c']
-                target = entry * 1.06
-                stop = entry * 0.97
+            # --- فلتر السيولة المتوسطة (Market Cap Proxy) ---
+            # نبحث عن عملات حجم تداولها اليومي بين 10 مليون و 250 مليون دولار
+            # هذا النطاق هو الأسهل لتحقيق انفجار 10% بمجهود سيولة بسيط
+            if 10_000_000 <= daily_volume <= 250_000_000:
                 
-                name = symbol.replace('/USDT', '')
-                msg = (
-                    f"⚡️ **توصية انفجار سعري جديدة**\n"
-                    f"العملة: #{name}\n\n"
-                    f"📥 **سعر الدخول:** `{entry:.4f}`\n"
-                    f"🎯 **الهدف (6%+):** `{target:.4f}`\n"
-                    f"🛑 **وقف الخسارة (3%-):** `{stop:.4f}`\n\n"
-                    f"📊 RSI: {last['RSI']:.2f} | الضغط: {last['Width']:.2f}%"
-                )
-                send_to_all_friends(msg)
+                # جلب آخر 50 شمعة (فريم 15 دقيقة)
+                bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=50)
+                df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
                 
-    except Exception as e:
-        print(f"Scan Error: {e}")
+                # 1. حساب مؤشر ضغط البولنجر (Bollinger Squeeze)
+                df['MA20'] = df['c'].rolling(20).mean()
+                df['STD'] = df['c'].rolling(20).std()
+                # حساب العرض المئوي (Width)
+                df['Width'] = (df['STD'] * 4) / df['MA20'] * 100
+                
+                # 2. حساب RSI (14)
+                delta = df['c'].diff()
+                gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                rs = gain / (loss + 1e-9)
+                df['RSI'] = 100 - (100 / (1 + rs))
+                
+                # جلب آخر قيم محسوبة
+                last = df.iloc[-1]
+                current_width = last['Width']
+                current_rsi = last['RSI']
+                current_price = last['c']
 
-# المجدول الزمني كل 15 دقيقة
+                # --- شروط الانفجار الصارمة ---
+                # ضغط حاد جدا (Width < 1.2%) + قوة صاعدة (RSI 55-65)
+                if not np.isnan(current_width) and current_width < 1.2 and 55 <= current_rsi <= 65:
+                    
+                    target_10 = current_price * 1.10  # هدف 10%
+                    stop_loss = current_price * 0.96  # وقف 4% (لتحمل التذبذب)
+                    
+                    name = symbol.replace('/USDT', '')
+                    msg = (
+                        f"🌋 **إشارة انفجار بركاني (+10%)**\n"
+                        f"العملة: #{name}\n\n"
+                        f"📊 **حالة الضغط:** `{current_width:.2f}%` (انضغاط حاد)\n"
+                        f"📈 **القوة (RSI):** `{current_rsi:.2f}`\n"
+                        f"💰 **سيولة 24h:** `${daily_volume/1e6:.1f}M`\n\n"
+                        f"📥 **دخول ماركت:** `{current_price:.4f}`\n"
+                        f"🎯 **الهدف الرئيسي:** `{target_10:.4f}`\n"
+                        f"🛑 **وقف الخسارة:** `{stop_loss:.4f}`\n\n"
+                        f"⚠️ *ملاحظة: السيولة متوسطة، الحركة قد تكون سريعة جداً.*"
+                    )
+                    send_to_all_friends(msg)
+                    
+    except Exception as e:
+        print(f"Error in Scanner: {e}")
+
+# إعداد المجدول ليعمل كل 15 دقيقة
 scheduler = BackgroundScheduler(daemon=True)
-scheduler.add_job(scan_for_explosion, 'interval', minutes=15)
+scheduler.add_job(scan_mega_explosion, 'interval', minutes=15)
 scheduler.start()
 
 @app.route('/')
-def home():
-    return "<h1>البوت يرسل الصفقات لجميع الأصدقاء المضافين!</h1>"
+def index():
+    return "<h1>Gold Range Explosion Radar is Running!</h1>"
 
 if __name__ == "__main__":
-    send_to_all_friends("🚀 **البوت يعمل الآن!**\nسيتم إرسال الصفقات لجميع المشتركين في هذه القائمة.")
-    scan_market = scan_for_explosion()
+    # رسالة عند بدء التشغيل للتأكد من الاتصال
+    send_to_all_friends("🚀 **تم تشغيل رادار الانفجار السعري (+10%) بنجاح!**\nسأراقب الآن عملات النطاق الذهبي وأرسل التنبيهات للجميع.")
+    
+    # تشغيل فحص فوري عند الإقلاع
+    scan_mega_explosion()
+    
+    # تشغيل السيرفر على منفذ رندر الافتراضي
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
+ 
+   
