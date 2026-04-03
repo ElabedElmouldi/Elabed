@@ -10,8 +10,15 @@ from apscheduler.schedulers.background import BackgroundScheduler
 app = Flask(__name__)
 
 # --- الإعدادات (يجب ملؤها بدقة) ---
-TOKEN = "ضـع_تـوكن_البـوت_هـنا"
-CHAT_ID = "ضـع_ID_حسابك_هنا"
+
+# --- إعدادات التلجرام للمجموعة ---
+TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
+
+# أضف هنا أرقام الـ ID الخاصة بأصدقائك (تأكد أن كل صديق قد ضغط Start للبوت)
+FRIENDS_IDS = [
+    "5067771509", # الـ ID الخاص بك
+    "2107567005", # الـ ID الصديق الأول
+]
 
 def send_telegram_msg(message):
     """دالة إرسال الرسائل مع نظام فحص الأخطاء"""
