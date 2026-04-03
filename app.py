@@ -11,134 +11,116 @@ import time
 app = Flask(__name__)
 
 # ==========================================
-# --- إعدادات التلجرام (تأكد من صحتها) ---
+# --- إعدادات التلجرام (تأكد من الـ ID والتوكن) ---
 # ==========================================
-TOKEN
-# --- إعدادات التلجرام للمجموعة ---
-TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
-
-# أضف هنا أرقام الـ ID الخاصة بأصدقائك (تأكد أن كل صديق قد ضغط Start للبوت)
-FRIENDS_IDS = [
-    "5067771509", # الـ ID الخاص بك
-    "2107567005", # الـ ID الصديق الأول
-]
-
+TOKEN = "ضـع_تـوكن_البـوت_هـنا"
+FRIENDS_IDS = ["ضـع_الـID_الخاص_بك_هنا"] 
 
 STABLE_COINS = ['USDT', 'USDC', 'BUSD', 'DAI', 'TUSD', 'FDUSD', 'USDS', 'EUR', 'GBP']
 
-def send_to_all(message):
-    """إرسال الرسائل مع طباعة النتيجة في سجلات رندر للتأكد"""
+def send_to_telegram(message):
+    """إرسال الرسائل لجميع المشتركين"""
     for chat_id in FRIENDS_IDS:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
         try:
-            response = requests.post(url, json=payload, timeout=15)
-            if response.status_code == 200:
-                print(f"✅ Success: Message sent to {chat_id}")
-            else:
-                print(f"❌ Failed: {response.text}")
+            requests.post(url, json=payload, timeout=10)
         except Exception as e:
-            print(f"⚠️ Error: {str(e)}")
-
-def send_welcome_message():
-    """رسالة ترحيبية قوية عند الإقلاع"""
-    now = datetime.now().strftime('%Y-%m-%d %H:%M')
-    msg = (
-        "🟢 **رادار الانفجارات السعرية متصل الآن!**\n"
-        "━━━━━━━━━━━━━━━\n"
-        f"📅 وقت التشغيل: `{now}`\n"
-        "🤖 الحالة: يعمل بنظام الفلاتر المتقدمة (V4.3)\n"
-        "📡 المراقبة: فريم 15 دقيقة / تأكيد 4 ساعات\n"
-        "━━━━━━━━━━━━━━━\n"
-        "✨ سأبدأ الآن بفحص السوق وإرسال أولى الصفقات..."
-    )
-    send_to_all(msg)
+            print(f"Error sending message: {e}")
 
 def send_heartbeat():
+    """رسالة دورية لتأكيد عمل البوت (كل ساعتين)"""
     now = datetime.now().strftime('%H:%M')
-    msg = f"🔔 **تحديث دوري:** البوت يعمل بكفاءة. (توقيت تونس: {now})"
-    send_to_all(msg)
+    msg = (
+        f"🤖 **تحديث دوري للنظام**\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"⏱ الوقت الحالي: `{now}` (توقيت تونس)\n"
+        f"📡 الحالة: أراقب السوق بحثاً عن انفجارات سعرية..\n"
+        f"⚙️ الاستراتيجية: Bollinger Squeeze + Volume Spike"
+    )
+    send_to_telegram(msg)
 
-# --- دوال التحليل الفني ---
-def get_data(exchange, symbol, timeframe, limit=100):
-    try:
-        bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-        return pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-    except: return pd.DataFrame()
+def calculate_explosion_logic(symbol, df_15m, df_4h):
+    """خوارزمية اكتشاف الانفجار السعري"""
+    # 1. حساب البولنجر وفلتر الضغط (Squeeze)
+    df_15m['MA20'] = df_15m['c'].rolling(20).mean()
+    df_15m['STD'] = df_15m['c'].rolling(20).std()
+    df_15m['Upper'] = df_15m['MA20'] + (df_15m['STD'] * 2)
+    df_15m['Lower'] = df_15m['MA20'] - (df_15m['STD'] * 2)
+    df_15m['Width'] = (df_15m['Upper'] - df_15m['Lower']) / df_15m['MA20'] * 100
 
-def calculate_indicators(df):
-    if df.empty: return df
-    df['MA20'] = df['c'].rolling(20).mean()
-    df['STD'] = df['c'].rolling(20).std()
-    df['Lower'] = df['MA20'] - (df['STD'] * 2)
-    df['Width'] = (df['STD'] * 4) / df['MA20'] * 100
-    delta = df['c'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    df['RSI'] = 100 - (100 / (1 + (gain / (loss + 1e-9))))
-    mfv = ((df['c'] - df['l']) - (df['h'] - df['c'])) / (df['h'] - df['l'] + 1e-9) * df['v']
-    df['CMF'] = mfv.rolling(20).sum() / (df['v'].rolling(20).sum() + 1e-9)
-    df['TR'] = np.maximum((df['h'] - df['l']), np.maximum(abs(df['h'] - df['c'].shift(1)), abs(df['l'] - df['c'].shift(1))))
-    df['ATR'] = df['TR'].rolling(14).mean()
-    return df
+    # 2. فلتر السيولة (Volume Spike)
+    avg_vol = df_15m['v'].rolling(20).mean().iloc[-1]
+    current_vol = df_15m['v'].iloc[-1]
 
-def scan_market():
-    print("🔎 Scanning Market...")
+    # 3. فلتر الاتجاه (4 ساعات)
+    ema_50_4h = df_4h['c'].ewm(span=50).mean().iloc[-1]
+    price_4h = df_4h['c'].iloc[-1]
+
+    last = df_15m.iloc[-1]
+    
+    # الشروط: ضغط < 1.2% + سيولة > 1.8x المتوسط + اتجاه صاعد 4H
+    if last['Width'] < 1.2 and current_vol > (avg_vol * 1.8) and price_4h > ema_50_4h:
+        entry = last['c']
+        # حساب وقف الخسارة والهدف ديناميكياً
+        atr = (df_15m['h'] - df_15m['l']).rolling(14).mean().iloc[-1]
+        target = entry + (atr * 3)
+        stop = last['Lower']
+        
+        profit_pct = ((target - entry) / entry) * 100
+        loss_pct = ((entry - stop) / entry) * 100
+
+        if profit_pct >= 5.0:
+            msg = (
+                f"🌋 **إشارة: انفجار سعري مكتشف!**\n"
+                f"العملة: #{symbol.replace('/USDT', '')}\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"📥 **دخول:** `{entry:.4f}`\n"
+                f"🎯 **هدف (+{profit_pct:.1f}%):** `{target:.4f}`\n"
+                f"🛑 **وقف (-{loss_pct:.1f}%):** `{stop:.4f}`\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"📊 **بيانات الضغط:** `{last['Width']:.2f}%` ⚠️\n"
+                f"📈 **قوة السيولة:** `x{current_vol/avg_vol:.1f}` 🚀"
+            )
+            send_to_telegram(msg)
+
+def run_scanner():
+    print("🔎 Scanning market for explosions...")
     try:
         exchange = ccxt.binance()
         tickers = exchange.fetch_tickers()
-        symbols = [s for s in tickers if s.endswith('/USDT') and s.split('/')[0] not in STABLE_COINS]
+        # تصفية عملات النطاق الذهبي (10M - 300M volume)
+        symbols = [s for s in tickers if s.endswith('/USDT') and 
+                   10_000_000 <= tickers[s]['quoteVolume'] <= 300_000_000 and 
+                   s.split('/')[0] not in STABLE_COINS]
 
         for symbol in symbols:
-            vol_24h = tickers[symbol]['quoteVolume']
-            if 10_000_000 <= vol_24h <= 300_000_000:
-                df_4h = get_data(exchange, symbol, '4h', 50)
-                if df_4h.empty or df_4h['c'].iloc[-1] < df_4h['c'].ewm(span=50).mean().iloc[-1]:
-                    continue
-                
-                df_15m = get_data(exchange, symbol, '15m', 100)
-                df_15m = calculate_indicators(df_15m)
-                if df_15m.empty: continue
-                last = df_15m.iloc[-1]
-
-                if last['Width'] < 1.2 and 55 <= last['RSI'] <= 65 and last['CMF'] > 0:
-                    entry = last['c']
-                    target = entry + (last['ATR'] * 3)
-                    stop = last['Lower']
-                    profit_pct = ((target - entry) / entry) * 100
-                    loss_pct = ((entry - stop) / entry) * 100
-                    
-                    if profit_pct >= 5.0:
-                        msg = (
-                            f"🌋 **إشارة انفجار (+{profit_pct:.1f}%)**\n"
-                            f"العملة: #{symbol.replace('/USDT', '')}\n"
-                            f"━━━━━━━━━━━━━━━\n"
-                            f"📥 **دخول:** `{entry:.4f}`\n"
-                            f"🛑 **وقف:** `{stop:.4f}` ({loss_pct:.1f}-%)\n"
-                            f"🎯 **هدف:** `{target:.4f}`\n"
-                            f"📊 RSI: `{last['RSI']:.1f}` | CMF: `{last['CMF']:.2f}`"
-                        )
-                        send_to_all(msg)
+            bars_15m = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=50)
+            bars_4h = exchange.fetch_ohlcv(symbol, timeframe='4h', limit=50)
+            df_15m = pd.DataFrame(bars_15m, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+            df_4h = pd.DataFrame(bars_4h, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+            calculate_explosion_logic(symbol, df_15m, df_4h)
     except Exception as e:
         print(f"Error: {e}")
 
 # المجدول الزمني
 scheduler = BackgroundScheduler(daemon=True)
-scheduler.add_job(scan_market, 'interval', minutes=15)
+# فحص السوق كل 15 دقيقة
+scheduler.add_job(run_scanner, 'interval', minutes=15)
+# إرسال رسالة "أنا أعمل" كل ساعتين
 scheduler.add_job(send_heartbeat, 'interval', hours=2)
 scheduler.start()
 
 @app.route('/')
 def home():
-    return "Bot is Active!"
+    return "<h1>Explosion Radar V5.1 is Active!</h1>"
 
 if __name__ == "__main__":
-    # تشغيل الرسالة الترحيبية مع تأخير بسيط لضمان اتصال الشبكة
-    time.sleep(5) 
-    send_welcome_message()
+    # رسالة ترحيبية فور التشغيل
+    time.sleep(2)
+    send_to_telegram("✅ **تم تفعيل رادار الانفجار السعري V5.1**\nأنا الآن أراقب السوق 24/7 وسأرسل لك تحديثاً كل ساعتين.")
     
-    # تشغيل أول فحص
-    scan_market()
+    run_scanner()
     
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
