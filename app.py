@@ -1,4 +1,3 @@
-
 import os
 import requests
 import ccxt
@@ -7,14 +6,15 @@ import numpy as np
 from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
 
-app = Flask(name)
+app = Flask(__name__)
 
 # --- إعدادات التلجرام للمجموعة ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 
 # أضف هنا أرقام الـ ID الخاصة بأصدقائك (تأكد أن كل صديق قد ضغط Start للبوت)
 FRIENDS_IDS = [
-    "5067771509"
+    "5067771509", # الـ ID الخاص بك
+    "2107567005"# الـ ID الصديق الأول
 
 ]
 
@@ -68,11 +68,11 @@ def scan_for_explosion():
                 
                 name = symbol.replace('/USDT', '')
                 msg = (
-                    f"⚡️ توصية انفجار سعري جديدة\n"
+                    f"⚡️ **توصية انفجار سعري جديدة**\n"
                     f"العملة: #{name}\n\n"
-                    f"📥 سعر الدخول: {entry:.4f}\n"
-                    f"🎯 الهدف (6%+): {target:.4f}\n"
-                    f"🛑 وقف الخسارة (3%-): {stop:.4f}\n\n"
+                    f"📥 **سعر الدخول:** `{entry:.4f}`\n"
+                    f"🎯 **الهدف (6%+):** `{target:.4f}`\n"
+                    f"🛑 **وقف الخسارة (3%-):** `{stop:.4f}`\n\n"
                     f"📊 RSI: {last['RSI']:.2f} | الضغط: {last['Width']:.2f}%"
                 )
                 send_to_all_friends(msg)
@@ -89,8 +89,8 @@ scheduler.start()
 def home():
     return "<h1>البوت يرسل الصفقات لجميع الأصدقاء المضافين!</h1>"
 
-if name == "main":
-    send_to_all_friends("🚀 البوت يعمل الآن!\nسيتم إرسال الصفقات لجميع المشتركين في هذه القائمة.")
+if __name__ == "__main__":
+    send_to_all_friends("🚀 **البوت يعمل الآن!**\nسيتم إرسال الصفقات لجميع المشتركين في هذه القائمة.")
     scan_market = scan_for_explosion()
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
