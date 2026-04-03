@@ -10,34 +10,33 @@ app = Flask(__name__)
 
 # --- الإعدادات ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
+
+# تم الإبقاء على الأيدي الأول فقط كما طلبت
 TARGET_ID = "5067771509" 
 
-# قائمة العملات المستبعدة
-EXCLUDED_COINS = ['BTC', 'ETH', 'USDT', 'USDC', 'BUSD', 'DAI', 'TUSD', 'FDUSD', 'USTC', 'EUR', 'GBP']
-
 def send_telegram_message(message):
+    """إرسال الرسالة للمعرف المحدد فقط"""
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": TARGET_ID, "text": message, "parse_mode": "Markdown"}
+    payload = {
+        "chat_id": TARGET_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
     try:
-        requests.post(url, json=payload, timeout=10)
-    except:
-        pass
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code != 200:
+            print(f"Error from Telegram: {response.text}")
+    except Exception as e:
+        print(f"Connection Error: {e}")
 
 def scan_for_explosion():
-    print("🔄 جاري فحص العملات البديلة...")
+    print("🚀 جاري فحص السوق وإرسال الصفقات...")
     try:
         exchange = ccxt.binance({'enableRateLimit': True})
         tickers = exchange.fetch_tickers()
         
-        symbols = []
-        for s in tickers:
-            if s.endswith('/USDT'):
-                coin_name = s.split('/')[0]
-                # تصفية العملات المستقرة و BTC/ETH وحجم التداول
-                if coin_name not in EXCLUDED_COINS and tickers[s]['quoteVolume'] > 1000000:
-                    symbols.append(s)
-
-        # ترتيب حسب السيولة واختيار أعلى 30
+        # تصفية العملات ذات السيولة الجيدة (أكثر من مليون دولار حجم تداول)
+        symbols = [s for s in tickers if s.endswith('/USDT') and tickers[s]['quoteVolume'] > 1000000]
         sorted_symbols = sorted(symbols, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:30]
         
         for symbol in sorted_symbols:
@@ -60,36 +59,37 @@ def scan_for_explosion():
             
             last = df.iloc[-1]
             
-            # الشروط: ضغط أقل من 2% و RSI بين 50-60
+            # الشروط: انضغاط أقل من 2% و RSI بين 50 و 60
             if last['Width'] < 2.0 and 50 <= last['RSI'] <= 60:
                 entry = last['c']
+                target = entry * 1.05 # هدف 5%
+                stop = entry * 0.97  # وقف 3%
+                
                 name = symbol.replace('/USDT', '')
                 msg = (
-                    f"⚡️ **إشارة عملة بديلة (Altcoin)**\n"
-                    f"العملة: #{name}\n"
-                    f"السعر: `{entry:.4f}`\n"
+                    f"⚡️ **توصية انفجار سعري (خاصة)**\n"
+                    f"العملة: #{name}\n\n"
+                    f"📥 **سعر الدخول:** `{entry:.4f}`\n"
+                    f"🎯 **الهدف:** `{target:.4f}`\n"
+                    f"🛑 **الوقف:** `{stop:.4f}`\n\n"
                     f"📊 RSI: {last['RSI']:.2f} | الضغط: {last['Width']:.2f}%"
                 )
                 send_telegram_message(msg)
                 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Scan Error: {e}")
 
-# --- تشغيل المجدول بشكل صحيح ---
+# المجدول الزمني كل 15 دقيقة
 scheduler = BackgroundScheduler(daemon=True)
-# إضافة الوظيفة لتعمل كل 15 دقيقة
-scheduler.add_job(func=scan_for_explosion, trigger="interval", minutes=15)
+scheduler.add_job(scan_for_explosion, 'interval', minutes=15)
 scheduler.start()
 
 @app.route('/')
 def home():
-    return "Bot is Active and Scanning Altcoins!"
+    return f"<h1>البوت يعمل ويرسل التقارير إلى المعرف: {TARGET_ID}</h1>"
 
 if __name__ == "__main__":
-    # إرسال رسالة تنبيه عند بدء التشغيل للتأكد من أنه يعمل
-    send_telegram_message("✅ تم إعادة تشغيل البوت بنجاح وهو الآن يراقب العملات البديلة فقط.")
-    
-    # الحصول على المنفذ (Port) الخاص بالاستضافة
+    send_telegram_message("🚀 **تم تشغيل البوت بنجاح!**\nسيتم إرسال التنبيهات إليك هنا مباشرة.")
+    scan_for_explosion()
     port = int(os.environ.get("PORT", 10000))
-    # تشغيل Flask
     app.run(host='0.0.0.0', port=port)
