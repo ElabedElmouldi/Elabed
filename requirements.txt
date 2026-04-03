@@ -1,7 +1,7 @@
 flask
-gunicorn
 requests
 ccxt
 pandas
 numpy
 apscheduler
+gunicorn
