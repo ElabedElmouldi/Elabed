@@ -14,20 +14,20 @@ TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 # تم الإبقاء على الأيدي الأول فقط كما طلبت
 TARGET_ID = "5067771509" 
 
-
-
 def send_telegram_message(message):
+    """إرسال الرسالة للمعرف المحدد فقط"""
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": TARGET_ID, "text": message, "parse_mode": "Markdown"}
+    payload = {
+        "chat_id": TARGET_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
     try:
-        response = requests.post(url, json=payload, timeout=15)
-        # هذا السطر سيطبع لك الرد القادم من تلجرام في الـ Logs
-        print(f"Telegram Response: {response.json()}") 
-        if not response.json().get("ok"):
-            print(f"❌ فشل الإرسال: {response.json().get('description')}")
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code != 200:
+            print(f"Error from Telegram: {response.text}")
     except Exception as e:
-        print(f"📡 خطأ في الاتصال: {e}")
-
+        print(f"Connection Error: {e}")
 
 def scan_for_explosion():
     print("🚀 جاري فحص السوق وإرسال الصفقات...")
