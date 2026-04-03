@@ -1,4 +1,3 @@
-
 import os
 import requests
 import ccxt
@@ -9,6 +8,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 
+
 # --- إعدادات التلجرام للمجموعة ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 
@@ -17,93 +17,99 @@ FRIENDS_IDS = [
     "5067771509", # الـ ID الخاص بك
     "2107567005", # الـ ID الصديق الأول
 ]
-# قائمة العملات المستقرة والعملات غير المرغوبة لاستبعادها
-STABLE_COINS = [
-    'USDT', 'USDC', 'BUSD', 'DAI', 'TUSD', 'USDP', 'USDD', 
-    'FDUSD', 'EUR', 'GBP', 'JPY', 'AEUR', 'USDS'
-]
 
-def send_to_all_friends(message):
+
+STABLE_COINS = ['USDT', 'USDC', 'BUSD', 'DAI', 'TUSD', 'FDUSD', 'EUR', 'USDS']
+
+def send_to_all(message):
     for chat_id in FRIENDS_IDS:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
-        try:
-            requests.post(url, json=payload, timeout=10)
-        except:
-            pass
+        try: requests.post(url, json=payload, timeout=10)
+        except: pass
 
-def scan_mega_explosion():
-    print("🔎 فحص العملات المتذبذبة (استبعاد المستقرة)...")
+def calculate_indicators(df):
+    # 1. حساب البولنجر باند
+    df['MA20'] = df['c'].rolling(20).mean()
+    df['STD'] = df['c'].rolling(20).std()
+    df['Upper'] = df['MA20'] + (df['STD'] * 2)
+    df['Lower'] = df['MA20'] - (df['STD'] * 2)
+    df['Width'] = (df['Upper'] - df['Lower']) / df['MA20'] * 100
+
+    # 2. حساب RSI
+    delta = df['c'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    df['RSI'] = 100 - (100 / (1 + (gain / (loss + 1e-9))))
+
+    # 3. حساب ATR (لقياس التذبذب واحتساب الأهداف)
+    df['H-L'] = df['h'] - df['l']
+    df['H-PC'] = abs(df['h'] - df['c'].shift(1))
+    df['L-PC'] = abs(df['l'] - df['c'].shift(1))
+    df['TR'] = df[['H-L', 'H-PC', 'L-PC']].max(axis=1)
+    df['ATR'] = df['TR'].rolling(14).mean()
+
+    return df
+
+def scan_smart_explosion():
+    print("🚀 جاري فحص السوق بالاستراتيجية الديناميكية...")
     try:
         exchange = ccxt.binance()
         tickers = exchange.fetch_tickers()
-        
-        # فلترة العملات: يجب أن تنتهي بـ USDT وألا تكون في القائمة السوداء
-        symbols = [
-            s for s in tickers 
-            if s.endswith('/USDT') 
-            and s.split('/')[0] not in STABLE_COINS # هذا هو الفلتر الجديد
-        ]
-        
+        symbols = [s for s in tickers if s.endswith('/USDT') and s.split('/')[0] not in STABLE_COINS]
+
         for symbol in symbols:
             ticker = tickers[symbol]
-            daily_volume = ticker['quoteVolume']
-            
-            # فلتر السيولة الذهبي (بين 10 و 250 مليون دولار)
-            if 10_000_000 <= daily_volume <= 250_000_000:
-                
-                bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=50)
+            vol_24h = ticker['quoteVolume']
+
+            # فلتر السيولة المتوسطة (النطاق المتفجر)
+            if 10_000_000 <= vol_24h <= 300_000_000:
+                bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=100)
                 df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-                
-                # حساب ضغط البولنجر (Squeeze)
-                df['MA20'] = df['c'].rolling(20).mean()
-                df['STD'] = df['c'].rolling(20).std()
-                df['Width'] = (df['STD'] * 4) / df['MA20'] * 100
-                
-                # حساب RSI
-                delta = df['c'].diff()
-                gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-                rs = gain / (loss + 1e-9)
-                df['RSI'] = 100 - (100 / (1 + rs))
+                df = calculate_indicators(df)
                 
                 last = df.iloc[-1]
                 
-                # شروط الانفجار الصارمة (RSI 55-65 وضغط < 1.2%)
-                if not np.isnan(last['Width']) and last['Width'] < 1.2 and 55 <= last['RSI'] <= 65:
+                # --- شروط الدخول الذكية ---
+                # انضغاط حاد (< 1.2%) + قوة RSI (55-65)
+                if last['Width'] < 1.2 and 55 <= last['RSI'] <= 65:
+                    entry = last['c']
                     
-                    price = last['c']
-                    target = price * 1.10
-                    stop = price * 0.96
+                    # --- الحسابات الديناميكية ---
+                    # الهدف: سعر الدخول + (3 أضعاف التذبذب ATR) لصيد انفجار كبير
+                    target = entry + (last['ATR'] * 3)
+                    # الوقف: خط البولنجر السفلي (دعم فني متحرك)
+                    stop = last['Lower']
                     
-                    name = symbol.replace('/USDT', '')
+                    # حساب النسبة المتوقعة للربح للتوضيح
+                    profit_pct = ((target - entry) / entry) * 100
+
                     msg = (
-                        f"🌋 **إشارة انفجار حقيقي (+10%)**\n"
-                        f"العملة: #{name}\n\n"
-                        f"📊 **حالة الضغط:** `{last['Width']:.2f}%`\n"
-                        f"📈 **القوة (RSI):** `{last['RSI']:.2f}`\n"
-                        f"💰 **سيولة 24h:** `${daily_volume/1e6:.1f}M`\n\n"
-                        f"📥 **دخول:** `{price:.4f}`\n"
-                        f"🎯 **الهدف:** `{target:.4f}`\n"
-                        f"🛑 **الوقف:** `{stop:.4f}`"
+                        f"🌋 **انفجار ذكي متوقع (ATR + BB)**\n"
+                        f"العملة: #{symbol.replace('/USDT', '')}\n\n"
+                        f"📊 **الضغط الفني:** `{last['Width']:.2f}%`\n"
+                        f"📈 **قوة الزخم:** `{last['RSI']:.2f}`\n"
+                        f"🌀 **معدل التذبذب (ATR):** `{last['ATR']:.4f}`\n\n"
+                        f"📥 **سعر الدخول:** `{entry:.4f}`\n"
+                        f"🎯 **الهدف الديناميكي:** `{target:.4f}` (~{profit_pct:.1f}%)\n"
+                        f"🛑 **وقف الخسارة (BB):** `{stop:.4f}`\n\n"
+                        f"💰 سيولة العملة: `${vol_24h/1e6:.1f}M`"
                     )
-                    send_to_all_friends(msg)
-                    
+                    send_to_all(msg)
+
     except Exception as e:
         print(f"Error: {e}")
 
 # المجدول الزمني
 scheduler = BackgroundScheduler(daemon=True)
-scheduler.add_job(scan_mega_explosion, 'interval', minutes=15)
+scheduler.add_job(scan_smart_explosion, 'interval', minutes=15)
 scheduler.start()
 
 @app.route('/')
-def index():
-    return "Bot is Filtering Stables and Searching for Booms!"
+def home():
+    return "Smart Strategy (ATR & Bollinger) is Live!"
 
 if __name__ == "__main__":
-    scan_mega_explosion()
+    scan_smart_explosion()
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
-
-
