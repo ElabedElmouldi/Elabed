@@ -1,3 +1,4 @@
+> Dream Agency:
 import os
 import requests
 import ccxt
@@ -6,105 +7,91 @@ import numpy as np
 from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
 
-app = Flask(__name__)
+app = Flask(name)
 
-# --- الإعدادات ---
+# --- إعدادات التلجرام للمجموعة ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
-FRIENDS_IDS = ["5067771509", "2107567005"]
 
-def send_to_all(message):
-    """إرسال رسالة لجميع المعرفات المضافة"""
+# أضف هنا أرقام الـ ID الخاصة بأصدقائك (تأكد أن كل صديق قد ضغط Start للبوت)
+FRIENDS_IDS = [
+    "5067771509", # الـ ID الخاص بك
+    "2107567005"# الـ ID الصديق الأول
+
+]
+
+def send_to_all_friends(message):
+    """إرسال الرسالة لكل شخص في القائمة"""
     for chat_id in FRIENDS_IDS:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "Markdown"
+        }
         try:
-            requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=5)
-        except:
-            pass
+            requests.post(url, json=payload, timeout=10)
+        except Exception as e:
+            print(f"Error sending to {chat_id}: {e}")
 
-def heart_beat_job():
-    """رسالة الحالة (كل ساعة) للتأكد من أن البوت يعمل"""
-    print("💓 إرسال نبضة الحالة الدورية...")
-    msg = "🟢 **تقرير الحالة:** البوت يعمل بشكل سليم ومستمر في مراقبة السوق."
-    send_to_all(msg)
-
-def get_btc_status(exchange):
-    """تحليل اتجاه البيتكوين (فلتر الأمان)"""
+def scan_for_explosion():
+    print("🚀 جاري فحص السوق وإرسال الصفقات للأصدقاء...")
     try:
-        bars = exchange.fetch_ohlcv('BTC/USDT', timeframe='15m', limit=20)
-        df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-        sma = df['c'].mean()
-        current_price = df['c'].iloc[-1]
-        return "SAFE" if current_price >= sma else "RISKY"
-    except:
-        return "RISKY"
-
-def scan_market():
-    """فحص الانفجارات السعرية في العملات البديلة"""
-    print("🔄 جاري فحص العملات البديلة...")
-    try:
-        exchange = ccxt.binance({'enableRateLimit': True})
-        btc_status = get_btc_status(exchange)
-        
-        # إذا كان البيتكوين في حالة هبوط، لا نرسل توصيات
-        if btc_status == "RISKY":
-            return
-
+        exchange = ccxt.binance()
         tickers = exchange.fetch_tickers()
-        # تصفية العملات (أعلى 30 عملة سيولة مقابل USDT)
-        symbols = [s for s in tickers if s.endswith('/USDT') and s.split('/')[0] not in ['BTC', 'ETH', 'USDT']][:30]
-
-        for symbol in symbols:
+        symbols = [s for s in tickers if s.endswith('/USDT')]
+        sorted_symbols = sorted(symbols, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:30]
+        
+        for symbol in sorted_symbols:
             bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=50)
             df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
             
-            # حساب الانضغاط (Bollinger Width)
+            # حساب RSI
+            delta = df['c'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+            rs = gain / (loss + 1e-9)
+            df['RSI'] = 100 - (100 / (1 + rs))
+            
+            # حساب انضغاط البولنجر
             df['MA20'] = df['c'].rolling(20).mean()
             df['STD'] = df['c'].rolling(20).std()
-            width = ((df['MA20'] + (df['STD']*2)) - (df['MA20'] - (df['STD']*2))) / df['MA20'] * 100
+            df['Upper'] = df['MA20'] + (df['STD'] * 2)
+            df['Lower'] = df['MA20'] - (df['STD'] * 2)
+            df['Width'] = (df['Upper'] - df['Lower']) / df['MA20'] * 100
             
-            # حساب RSI
-            diff = df['c'].diff()
-            gain = diff.where(diff > 0, 0).rolling(14).mean()
-            loss = -diff.where(diff < 0, 0).rolling(14).mean()
-            rsi = 100 - (100 / (1 + (gain / (loss + 1e-9))))
+            last = df.iloc[-1]
             
-            last_w = width.iloc[-1]
-            last_rsi = rsi.iloc[-1]
-            price = df['c'].iloc[-1]
-
-            # شروط الانفجار (Width < 1.8 و RSI في منطقة الانطلاق)
-            if last_w < 1.8 and 52 <= last_rsi <= 62:
-                msg = (f"🧨 **إشارة انفجار سعري**\n"
-                       f"العملة: #{symbol.replace('/USDT', '')}\n"
-                       f"السوق: ✅ BTC آمن\n\n"
-                       f"📥 دخول: `{price:.4f}`\n"
-                       f"🎯 هدف (6%): `{price*1.06:.4f}`\n"
-                       f"🛑 وقف (3%): `{price*0.97:.4f}`")
-                send_to_all(msg)
+            # شروط الصفقة (RSI 50-60 وانضغاط < 2%)
+            if last['Width'] < 2.0 and 50 <= last['RSI'] <= 60:
+                entry = last['c']
+                target = entry * 1.06
+                stop = entry * 0.97
+                
+                name = symbol.replace('/USDT', '')
+                msg = (
+                    f"⚡️ توصية انفجار سعري جديدة\n"
+                    f"العملة: #{name}\n\n"
+                    f"📥 سعر الدخول: {entry:.4f}\n"
+                    f"🎯 الهدف (6%+): {target:.4f}\n"
+                    f"🛑 وقف الخسارة (3%-): {stop:.4f}\n\n"
+                    f"📊 RSI: {last['RSI']:.2f} | الضغط: {last['Width']:.2f}%"
+                )
+                send_to_all_friends(msg)
+                
     except Exception as e:
-        print(f"Error in scanner: {e}")
+        print(f"Scan Error: {e}")
 
-# --- إعداد المجدول الزمني ---
+# المجدول الزمني كل 15 دقيقة
 scheduler = BackgroundScheduler(daemon=True)
-
-# 1. وظيفة فحص السوق (كل 15 دقيقة)
-scheduler.add_job(scan_market, 'interval', minutes=15)
-
-# 2. وظيفة "نبضة القلب" أو رسالة الحالة (كل 60 دقيقة)
-scheduler.add_job(heart_beat_job, 'interval', minutes=60)
-
+scheduler.add_job(scan_for_explosion, 'interval', minutes=15)
 scheduler.start()
 
 @app.route('/')
 def home():
-    return "Bot is Active! Monitoring Market & Sending Hourly Status."
+    return "<h1>البوت يرسل الصفقات لجميع الأصدقاء المضافين!</h1>"
 
-if __name__ == "__main__":
-    # إرسال رسالة ترحيبية وتنبيه بالأوضاع الجديدة
-    send_to_all("🚀 **تم التحديث:**\nسأقوم الآن بإرسال رسالة تأكيد كل ساعة، بالإضافة للتوصيات عند توفر الشروط.")
-    
-    # تشغيل أول فحص يدوياً
-    scan_market()
-    
+if name == "main":
+    send_to_all_friends("🚀 البوت يعمل الآن!\nسيتم إرسال الصفقات لجميع المشتركين في هذه القائمة.")
+    scan_market = scan_for_explosion()
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
