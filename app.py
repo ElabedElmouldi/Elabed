@@ -27,15 +27,22 @@ FRIENDS_IDS = [
 
 STABLE_COINS = ['USDT', 'USDC', 'BUSD', 'DAI', 'TUSD', 'FDUSD', 'USDS', 'EUR', 'GBP']
 
+
+
+# استبدل دالة send_to_telegram في كودك بهذا الجزء المطور للفحص
 def send_to_telegram(message):
-    """إرسال الرسائل لجميع المشتركين"""
     for chat_id in FRIENDS_IDS:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
         try:
-            requests.post(url, json=payload, timeout=10)
+            response = requests.post(url, json=payload, timeout=15)
+            # هذه السطور ستظهر لك في سجلات رندر (Logs) لتشخيص المشكلة
+            if response.status_code == 200:
+                print(f"✅ تم الإرسال بنجاح إلى: {chat_id}")
+            else:
+                print(f"❌ فشل الإرسال! كود الخطأ: {response.status_code} - السبب: {response.text}")
         except Exception as e:
-            print(f"Error sending message: {e}")
+            print(f"⚠️ خطأ في الاتصال: {str(e)}")
 
 def send_heartbeat():
     """رسالة دورية لتأكيد عمل البوت (كل ساعتين)"""
