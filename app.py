@@ -1,4 +1,4 @@
-> Dream Agency:
+
 import os
 import requests
 import ccxt
