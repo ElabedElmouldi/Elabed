@@ -112,16 +112,14 @@ scheduler.start()
 @app.route('/')
 def home():
     return "<h1>Explosion Detector is Active!</h1>"
-if __name__ == "__main__":
-    print("1. السيرفر بدأ الإقلاع...") # سيظهر في اللوقو
-    
-    try:
-        send_telegram_message("🚀 تجربة إرسال: البوت استيقظ!")
-        print("2. تم استدعاء دالة التلجرام بنجاح.")
-    except Exception as e:
-        print(f"❌ خطأ في استدعاء التلجرام: {e}")
 
-    port = int(os.environ.get("PORT", 10000))
-    print(f"3. جاري تشغيل Flask على المنفذ: {port}")
-    app.run(host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    # إرسال رسالة فورية عند تشغيل السيرفر للتأكد من وصول الإشعارات
+    send_telegram_message("🚀 **تم تفعيل رادار الانفجار السعري!**\nجاري البحث عن فرص (هدف 5%، وقف 2%).")
     
+    # تشغيل أول فحص يدوياً عند الإقلاع
+    detect_price_explosion()
+    
+    # تحديد المنفذ الخاص بالاستضافة (Render/Oracle)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
