@@ -15,10 +15,7 @@ app = Flask(__name__)
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 
 # أضف هنا أرقام الـ ID الخاصة بأصدقائك (تأكد أن كل صديق قد ضغط Start للبوت)
-FRIENDS_IDS = [
-    "5067771509", # الـ ID الخاص بك
-    "2107567005" # الـ ID الصديق الأول
-]
+CHAT_ID =  "5067771509"
 
 def send_telegram_msg(message):
     """دالة إرسال الرسائل مع نظام فحص الأخطاء"""
