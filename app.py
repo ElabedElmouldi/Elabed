@@ -8,173 +8,184 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 import logging
 
-# إعداد السجلات لمراقبة أداء البوت اللحظي
+# إعداد السجلات لمراقبة العمليات
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# --- الإعدادات الشخصية والقيود الأمنية (v8.6) ---
+# --- الإعدادات المالية والشخصية ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "-1003692815602"]
-MAX_OPEN_TRADES = 5  # سقف الصفقات لحماية المحفظة
-MAX_SLIPPAGE = 0.008 # حماية الفجوة السعرية (0.8%)
 
-# ذاكرة النظام المؤقتة
-pending_signals = {}
+# إعدادات المحفظة التراكمية
+INITIAL_BALANCE = 100.0       
+CURRENT_BALANCE = 100.0       
+RISK_PER_TRADE_PCT = 20.0     # تقسيم المحفظة إلى 5 أجزاء (كل صفقة 20%)
+MAX_OPEN_TRADES = 5           
+LIQUIDITY_MIN_24H = 15000000  # الحد الأدنى للسيولة 15 مليون دولار
+
+# ذاكرة النظام
 active_trades = {}
-daily_history = [] 
+daily_history = []
 
 def send_telegram(message):
     for chat_id in FRIENDS_IDS:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        try: 
+        try:
             requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=10)
-        except: 
+        except:
             pass
 
-def get_btc_status(exchange):
-    """فحص صحة السوق العام عبر البيتكوين"""
-    try:
-        bars = exchange.fetch_ohlcv('BTC/USDT', timeframe='1h', limit=2)
-        return ((bars[1][4] - bars[0][1]) / bars[0][1]) * 100
-    except: return 0
+# --- محرك المؤشرات الفنية ---
+def calculate_indicators(df):
+    # 1. الاتجاه العام والزخم
+    df['sma200'] = df['c'].rolling(window=200).mean()
+    df['ema9'] = df['c'].ewm(span=9, adjust=False).mean()
+    df['ema21'] = df['c'].ewm(span=21, adjust=False).mean()
 
+    # 2. البولينجر وضيق النطاق
+    df['ma20'] = df['c'].rolling(window=20).mean()
+    df['std'] = df['c'].rolling(window=20).std()
+    df['upper'] = df['ma20'] + (df['std'] * 2)
+    df['bw'] = (df['upper'] - (df['ma20'] - (df['std'] * 2))) / df['ma20']
+
+    # 3. RSI و MACD
+    delta = df['c'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    df['rsi'] = 100 - (100 / (1 + (gain / loss)))
+    
+    exp1 = df['c'].ewm(span=12, adjust=False).mean()
+    exp2 = df['c'].ewm(span=26, adjust=False).mean()
+    df['macd'] = exp1 - exp2
+    df['signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+    
+    return df
+
+# --- محرك الملاحقة اللصيقة (Trailing 1%) ---
 def check_market_logic():
-    """المحرك الذكي: فحص الصفقات وتحديث الوقف كل 60 ثانية"""
+    global CURRENT_BALANCE
     try:
-        exchange = ccxt.binance({'enableRateLimit': True})
-        btc_change = get_btc_status(exchange)
-
-        # 1. تفعيل الإشارات المعلقة (بسرعة دقيقة واحدة)
-        to_activate = []
-        for symbol, data in pending_signals.items():
-            if len(active_trades) >= MAX_OPEN_TRADES: continue
-            if btc_change < -1.5: continue
-            
-            ticker = exchange.fetch_ticker(symbol)
-            price = ticker['last']
-            
-            # حماية الفجوة: إذا طار السعر بعيداً، نلغي الإشارة
-            if price > (data['low_limit'] * (1 + MAX_SLIPPAGE)):
-                to_activate.append(symbol)
-                continue
-
-            if data['low_limit'] <= price <= data['high_limit']:
-                active_trades[symbol] = {
-                    'entry_price': price,
-                    'tp_trigger': price * 1.05, 
-                    'sl': price * 0.97,
-                    'is_secured': False,
-                    'is_trailing': False,
-                    'last_notified_sl_pct': 4.0 # مرجع تنبيهات المطاردة
-                }
-                send_telegram(f"📥 **تم دخول صفقة (تحديث دقيق)**\n━━━━━━━━━━━━━━\n🪙 #{symbol.replace('/USDT','')}\n💵 السعر: `{price:.4f}`\n🎯 الهدف الأولي: +5%")
-                to_activate.append(symbol)
-        
-        for s in to_activate: 
-            if s in pending_signals: del pending_signals[s]
-
-        # 2. إدارة الصفقات النشطة والمطاردة (Trailing)
+        exchange = ccxt.binance()
         to_remove = []
         for symbol, data in active_trades.items():
             ticker = exchange.fetch_ticker(symbol)
             price = ticker['last']
-            profit = ((price - data['entry_price']) / data['entry_price']) * 100
             
-            # أ- التأمين الآلي عند +3%
-            if profit >= 3.0 and not data['is_secured'] and not data['is_trailing']:
-                data['sl'] = data['entry_price']
-                data['is_secured'] = True
-                send_telegram(f"🛡️ **تأمين فوري (+3%)**\n🪙 {symbol}\n🔒 الوقف الآن عند نقطة الدخول (Risk Free).")
-
-            # ب- بدء نظام المطاردة عند +5%
-            if profit >= 5.0 and not data['is_trailing']:
-                data['is_trailing'] = True
-                data['sl'] = data['entry_price'] * 1.04 # حجز 4% كحد أدنى
-                send_telegram(f"🚀 **انطلاق المطاردة (v8.6)**\n🪙 {symbol}\n✅ تجاوزنا 5%، الوقف يلاحق السعر الآن!")
-
-            # ج- تحديث الوقف المتحرك والتنبيه عند كل 1% صعود إضافي
-            if data['is_trailing']:
-                potential_sl = price * 0.99 # الوقف يتبع السعر بفرق 1%
-                current_sl_pct = ((potential_sl - data['entry_price']) / data['entry_price']) * 100
+            # حساب الربح اللحظي
+            profit_pct = ((price - data['entry_price']) / data['entry_price']) * 100
+            
+            # منطق "الزحف اللصيق": الوقف دائماً تحت السعر الحالي بـ 1%
+            potential_sl = price * 0.99 
+            
+            if potential_sl > data['sl']:
+                old_sl_pct = ((data['sl'] - data['entry_price']) / data['entry_price']) * 100
+                new_sl_pct = ((potential_sl - data['entry_price']) / data['entry_price']) * 100
                 
-                # إرسال تنبيه فقط عند تحقيق قفزة 1% كاملة عن آخر تنبيه
-                if current_sl_pct >= (data['last_notified_sl_pct'] + 1.0):
+                # تحديث الوقف وإرسال إشعار عند كل صعود صحيح بنسبة 1%
+                if int(new_sl_pct) > int(old_sl_pct):
                     data['sl'] = potential_sl
-                    data['last_notified_sl_pct'] = current_sl_pct
-                    send_telegram(f"📈 **تحديث صعود (+1%)**\n🪙 {symbol}\n🚀 الربح: `{profit:.2f}%` | 🔒 الوقف المحمي: `{current_sl_pct:.1f}%`")
-                elif potential_sl > data['sl']:
-                    data['sl'] = potential_sl # تحديث صامت للوقف لضمان الدقة
+                    send_telegram(f"📈 **زحف الوقف (+1%)**: {symbol}\nالربح المحجوز الآن: `{new_sl_pct:.1f}%` \nالسعر الحالي: `{price}`")
+                else:
+                    data['sl'] = potential_sl # تحديث صامت للحفاظ على المسافة
 
-            # د- تنفيذ الخروج اللحظي
+            # تنفيذ الخروج عند ضرب الوقف
             if price <= data['sl']:
-                final_profit = ((data['sl'] - data['entry_price']) / data['entry_price']) * 100
-                daily_history.append({'symbol': symbol, 'profit': round(final_profit, 2)})
+                final_profit_pct = ((data['sl'] - data['entry_price']) / data['entry_price']) * 100
+                profit_usd = data['invested_amount'] * (final_profit_pct / 100)
                 
-                icon = "💰" if final_profit > 0 else "🛑"
-                send_telegram(f"{icon} **إغلاق الصفقة**\n━━━━━━━━━━━━━━\n🪙 {symbol}\n📉 سعر الخروج: `{price:.4f}`\n📊 النتيجة النهائية: `{final_profit:.2f}%`")
+                CURRENT_BALANCE += profit_usd
+                daily_history.append({'symbol': symbol, 'profit': round(final_profit_pct, 2), 'usd': profit_usd})
+                
+                icon = "💰" if final_profit_pct > 0 else "🛑"
+                send_telegram(f"{icon} **إغلاق وحجز أرباح**: {symbol}\nالنتيجة: `{final_profit_pct:+.2f}%` (${profit_usd:+.2f})\n🏦 الرصيد الجديد: `${CURRENT_BALANCE:.2f}`")
                 to_remove.append(symbol)
-
+                
         for s in to_remove: del active_trades[s]
-    except Exception as e: logger.error(f"Logic Error: {e}")
+    except Exception as e:
+        logger.error(f"Logic Error: {e}")
+
+# --- رادار المسح واكتشاف الفرص ---
+def scan_for_signals():
+    try:
+        exchange = ccxt.binance({'enableRateLimit': True})
+        check_market_logic() # تحديث الصفقات كل 60 ثانية
+        
+        tickers = exchange.fetch_tickers()
+        # فلتر السيولة (15M+)
+        symbols = [s for s, d in tickers.items() if s.endswith('/USDT') and d.get('quoteVolume', 0) > LIQUIDITY_MIN_24H]
+        symbols = sorted(symbols, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:100]
+
+        for symbol in symbols:
+            if symbol in active_trades or len(active_trades) >= MAX_OPEN_TRADES: continue
+            
+            bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=250)
+            df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+            df = calculate_indicators(df)
+            last = df.iloc[-1]
+            
+            # شروط الاستراتيجية (SMA 200 + Squeeze + Breakout)
+            if last['c'] > last['sma200'] and last['bw'] < 0.03:
+                if last['c'] > last['upper'] and last['ema9'] > last['ema21'] and 55 < last['rsi'] < 75:
+                    
+                    # حساب الحصة التراكمية
+                    trade_size = CURRENT_BALANCE * (RISK_PER_TRADE_PCT / 100)
+                    
+                    active_trades[symbol] = {
+                        'entry_price': last['c'],
+                        'sl': last['c'] * 0.99, # الوقف الأولي تحت السعر بـ 1% فوراً
+                        'invested_amount': trade_size,
+                        'last_notified_sl_pct': -1.0
+                    }
+                    send_telegram(f"🎯 **اكتشاف انفجار سيولة**\n🪙 #{symbol.replace('/USDT','')}\n📏 الضيق: `{last['bw']*100:.1f}%` | RSI: `{last['rsi']:.1f}`\n💰 الحصة: `${trade_size:.2f}`\n🚀 نظام الملاحقة اللصيقة (1%) نشط!")
+    except Exception as e:
+        logger.error(f"Scan Error: {e}")
+
+# --- التقارير الدورية ---
+def send_hourly_report():
+    if not active_trades:
+        send_telegram("⏳ **تقرير الساعة**: لا صفقات مفتوحة. الرادار يبحث عن سيولة...")
+        return
+    
+    msg = "📊 **حالة الصفقات المفتوحة**\n━━━━━━━━━━━━━━\n"
+    for s, data in active_trades.items():
+        try:
+            curr_p = ccxt.binance().fetch_ticker(s)['last']
+            p_pct = ((curr_p - data['entry_price']) / data['entry_price']) * 100
+            msg += f"🪙 {s}: `{p_pct:+.2f}%` (الوقف الحالي: `{(data['sl']-data['entry_price'])/data['entry_price']*100:+.1f}%`)\n"
+        except: pass
+    
+    growth = ((CURRENT_BALANCE - INITIAL_BALANCE) / INITIAL_BALANCE) * 100
+    msg += f"━━━━━━━━━━━━━━\n📈 تطور المحفظة: `+{growth:.2f}%`"
+    send_telegram(msg)
 
 def send_daily_summary():
-    """تقرير الحصاد اليومي المركب"""
     if not daily_history: return
-    total_profit = sum([t['profit'] for t in daily_history])
-    report = f"📅 **تقرير الأداء اليومي (v8.6)**\n━━━━━━━━━━━━━━\n"
-    for t in daily_history:
-        report += f"{'✅' if t['profit']>0 else '🛑'} {t['symbol']}: `{t['profit']}%`\n"
-    report += f"━━━━━━━━━━━━━━\n📊 صافي نمو المحفظة: `+{total_profit:.2f}%`"
+    total_usd = sum([d['usd'] for d in daily_history])
+    growth_pct = ((CURRENT_BALANCE - INITIAL_BALANCE) / INITIAL_BALANCE) * 100
+    
+    report = (f"📅 **كشف الحساب اليومي**\n━━━━━━━━━━━━━━\n"
+              f"✅ صفقات منتهية: `{len(daily_history)}` \n"
+              f"💵 أرباح اليوم: `${total_usd:+.2f}` \n"
+              f"🏦 رصيد المحفظة النهائي: `${CURRENT_BALANCE:.2f}` \n"
+              f"📊 نسبة التطور الكلية: `+{growth_pct:.2f}%` \n"
+              f"━━━━━━━━━━━━━━")
     send_telegram(report)
     daily_history.clear()
 
-def scan_for_signals():
-    """البحث عن اختراقات جديدة بفلاتر RSI والسيولة"""
-    try:
-        exchange = ccxt.binance({'enableRateLimit': True})
-        check_market_logic() # الفحص اللحظي يأخذ الأولوية
-        
-        tickers = exchange.fetch_tickers()
-        # استهداف العملات القوية فقط (Volume > 5M$)
-        symbols = [s for s in tickers if s.endswith('/USDT') and (tickers[s].get('quoteVolume') or 0) > 5000000]
-        sorted_s = sorted(symbols, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:150]
-
-        for symbol in sorted_s:
-            if symbol in active_trades or symbol in pending_signals: continue
-            if len(active_trades) >= MAX_OPEN_TRADES: break
-            
-            bars = exchange.fetch_ohlcv(symbol, timeframe='30m', limit=50)
-            df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-            
-            # حساب RSI (النطاق الذهبي 55-80)
-            delta = df['c'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-            rsi = 100 - (100 / (1 + (gain / loss))).iloc[-1]
-
-            recent_high = df['h'].iloc[-11:-1].max() # قمة آخر 5 ساعات
-            curr_p = df['c'].iloc[-1]
-            vol_ma = df['v'].rolling(20).mean().iloc[-1]
-            
-            # شرط الاختراق الانفجاري
-            if curr_p >= recent_high and df['v'].iloc[-1] > (vol_ma * 1.6) and 55 < rsi < 80:
-                pending_signals[symbol] = {'low_limit': curr_p, 'high_limit': curr_p * 1.008}
-                send_telegram(f"📡 **رصد إشارة اختراق (v8.6)**\n━━━━━━━━━━━━━━\n🪙 #{symbol.replace('/USDT','')}\n📊 RSI: `{rsi:.1f}`\n⚡ الفحص القادم خلال 60 ثانية.")
-    except Exception as e: logger.error(f"Scan Error: {e}")
-
-# المجدول الزمني الفوري (كل دقيقة واحدة)
+# --- تشغيل المجدول ---
 scheduler = BackgroundScheduler(daemon=True)
 scheduler.add_job(scan_for_signals, 'interval', minutes=1)
-scheduler.add_job(send_daily_summary, 'cron', hour=23, minute=50)
+scheduler.add_job(send_hourly_report, 'interval', hours=1)
+scheduler.add_job(send_daily_summary, 'cron', hour=23, minute=55)
 scheduler.start()
 
 @app.route('/')
 def home():
-    return f"Bot v8.6 Live - Scanning: 1m - Active Trades: {len(active_trades)}/{MAX_OPEN_TRADES}"
+    return f"Bot v11.0 Running - Equity: ${CURRENT_BALANCE:.2f} - Open: {len(active_trades)}"
 
 if __name__ == "__main__":
-    send_telegram("🚀 **إطلاق النسخة v8.6 (القناص الفوري)**\n━━━━━━━━━━━━━━\n• مسح السوق: كل 60 ثانية.\n• مطاردة الأرباح: نشطة.\n• سقف الصفقات: 5.")
+    send_telegram(f"🤖 **إطلاق النسخة v11.0 (Tight Trailing)**\n• نظام الزحف المئوي (1%) نشط.\n• فلتر SMA 200 + Liquidity فعال.")
     scan_for_signals()
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
