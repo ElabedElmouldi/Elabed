@@ -1,31 +1,40 @@
 import os, requests, ccxt, time, json, logging
+from datetime import datetime
 import pandas as pd
 import numpy as np
 from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# --- إعدادات النظام ---
-DATA_FILE = "ultimate_bot_v14.json"
+# --- إعدادات النظام والملفات ---
+DATA_FILE = "ultimate_bot_v14_1.json"
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
+# --- الإعدادات الشخصية ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "-1003692815602"]
 
-# إعدادات الاستراتيجية المتقدمة
-BUFFER_PCT = 0.04       # ملاحقة 4%
-BE_TRIGGER = 7.0        # تأمين عند 7% ربح
-PARTIAL_TP_PCT = 15.0   # بيع نصف الكمية عند 15%
+# إعدادات الاستراتيجية الاحترافية
+BUFFER_PCT = 0.04        # ملاحقة السعر بمسافة 4% (مناسبة للسبوت والسوق الصاعد)
+BE_TRIGGER = 7.0         # نقل الوقف لنقطة الدخول عند ربح 7%
+PARTIAL_TP_PCT = 15.0    # بيع 50% من الكمية عند ربح 15%
+MIN_VOLUME_LIMIT = 25_000_000 # الحد الأدنى للسيولة اليومية للعملة
+
+# عداد المسح الساعي
+total_scans_last_hour = 0
 
 def load_db():
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'r') as f: return json.load(f)
+        try:
+            with open(DATA_FILE, 'r') as f: return json.load(f)
+        except: pass
     return {"balance": 100.0, "active_trades": {}}
 
 def save_db(data):
     with open(DATA_FILE, 'w') as f: json.dump(data, f)
 
+# تحميل البيانات عند التشغيل
 db = load_db()
 CURRENT_BALANCE = db["balance"]
 active_trades = db["active_trades"]
@@ -43,9 +52,9 @@ def is_market_safe(exchange):
         df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
         sma200 = df['c'].rolling(200).mean().iloc[-1]
         return df['c'].iloc[-1] > sma200
-    except: return True # في حال الخطأ نستمر بحذر
+    except: return True
 
-# --- إدارة الصفقات الذكية (تأمين + جني جزئي) ---
+# --- إدارة الصفقات الذكية (v14.1) ---
 def check_trade_management():
     global CURRENT_BALANCE
     try:
@@ -58,92 +67,124 @@ def check_trade_management():
             
             # 1. تأمين الربح (Break-even) عند +7%
             if profit_pct >= BE_TRIGGER and not data.get('is_secured', False):
-                data['sl'] = data['entry_price'] * 1.01 # نقل الوقف لربح 1%
+                data['sl'] = data['entry_price'] * 1.01 
                 data['is_secured'] = True
-                send_telegram(f"🛡️ **تأمين (BE)**: {symbol}\nالربح وصل {profit_pct:.1f}%. الوقف الآن عند نقطة الدخول.")
+                send_telegram(f"🛡️ **تأمين صفقة**: {symbol}\nالربح وصل `{profit_pct:.1f}%`. الوقف الآن عند نقطة الدخول +1%.")
 
             # 2. جني ربح جزئي عند +15%
             if profit_pct >= PARTIAL_TP_PCT and not data.get('is_partial_tp', False):
-                tp_amount = data['invested_amount'] * 0.5 * (1 + profit_pct/100)
-                CURRENT_BALANCE += tp_amount
-                data['invested_amount'] *= 0.5 # تقليل الكمية المتبقية للنصف
+                # بيع النصف بربح وإعادته للرصيد
+                tp_usd = (data['invested_amount'] * 0.5) * (1 + profit_pct/100)
+                CURRENT_BALANCE += tp_usd
+                data['invested_amount'] *= 0.5 # النصف الآخر يكمل الملاحقة
                 data['is_partial_tp'] = True
-                send_telegram(f"💰 **جني ربح جزئي (50%)**: {symbol}\nتم سحب الأرباح وبقاء النصف للملاحقة.")
+                send_telegram(f"💰 **جني أرباح جزئي (50%)**: {symbol}\nتم سحب الأرباح للمحفظة. النصف المتبقي يلاحق الموجة!")
 
-            # 3. الملاحقة بـ 4%
+            # 3. نظام الملاحقة بـ 4% (الزحف للأعلى)
             potential_sl = price * (1 - BUFFER_PCT)
             if potential_sl > data['sl']:
                 data['sl'] = potential_sl
 
-            # الخروج النهائي
+            # 4. الخروج النهائي عند ضرب الوقف
             if price <= data['sl']:
                 final_pct = ((data['sl'] - data['entry_price']) / data['entry_price']) * 100
-                final_usd = data['invested_amount'] * (final_pct / 100)
-                CURRENT_BALANCE += (data['invested_amount'] + final_usd)
-                send_telegram(f"🛑 **خروج نهائي**: {symbol}\nالربح: `{final_pct:+.2f}%`\n🏦 الرصيد: `${CURRENT_BALANCE:.2f}`")
+                final_total = data['invested_amount'] * (1 + final_pct/100)
+                CURRENT_BALANCE += final_total
+                
+                icon = "💰" if final_pct > 0 else "🛑"
+                send_telegram(f"{icon} **خروج نهائي**: {symbol}\nالنتيجة: `{final_pct:+.2f}%` \n🏦 الرصيد الإجمالي: `${CURRENT_BALANCE:.2f}`")
                 to_remove.append(symbol)
                 save_db({"balance": CURRENT_BALANCE, "active_trades": active_trades})
 
         for s in to_remove: del active_trades[s]
     except Exception as e: logger.error(f"Mgmt Error: {e}")
 
-# --- رادار الانفجار مع فلتر الفوليوم والبيتكوين ---
+# --- رادار المسح لـ 100 عملة (v14.1) ---
 def scan_for_signals():
+    global total_scans_last_hour
     try:
         exchange = ccxt.binance({'enableRateLimit': True})
         check_trade_management()
         
-        if not is_market_safe(exchange):
-            return # توقف عن الشراء إذا كان البيتكوين هابطاً
+        # حماية المحفظة: لا شراء إذا كان البيتكوين هابطاً
+        if not is_market_safe(exchange): return
 
         tickers = exchange.fetch_tickers()
-        symbols = [s for s, d in tickers.items() if s.endswith('/USDT') and d.get('quoteVolume', 0) > 40_000_000]
-        symbols = sorted(symbols, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:30]
+        # اختيار أفضل 100 عملة سيولة فوق 25 مليون دولار
+        symbols = [s for s, d in tickers.items() if s.endswith('/USDT') and d.get('quoteVolume', 0) > MIN_VOLUME_LIMIT]
+        symbols = sorted(symbols, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:100]
 
         for symbol in symbols:
+            total_scans_last_hour += 1
             if symbol in active_trades or len(active_trades) >= 5: continue
-            time.sleep(0.2)
+            time.sleep(0.15) # حماية API
 
             bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=100)
             df = pd.DataFrame(bars, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
             
-            # فلتر الفوليوم (يجب أن يكون فوليوم الاختراق أعلى بـ 1.5 مرة من المتوسط)
+            # فلتر سيولة الاختراق (1.5x المتوسط)
             avg_vol = df['v'].rolling(20).mean().iloc[-2]
-            current_vol = df['v'].iloc[-1]
-            if current_vol < avg_vol * 1.5: continue
+            if df['v'].iloc[-1] < avg_vol * 1.5: continue
 
-            # مؤشرات البولينجر و RSI
+            # حساب البولينجر و RSI
             df['ma20'] = df['c'].rolling(20).mean()
             df['std'] = df['c'].rolling(20).std()
             df['upper'] = df['ma20'] + (df['std'] * 2)
             df['bw'] = (df['upper'] - (df['ma20'] - (df['std'] * 2))) / df['ma20']
             
             last = df.iloc[-1]
-            if last['bw'] < 0.02 and last['c'] > last['upper'] and 60 < rsi_calc(df) < 75:
-                trade_size = CURRENT_BALANCE * 0.20
-                active_trades[symbol] = {
-                    'entry_price': last['c'],
-                    'sl': last['c'] * 0.96,
-                    'invested_amount': trade_size,
-                    'is_secured': False, 'is_partial_tp': False
-                }
-                save_db({"balance": CURRENT_BALANCE, "active_trades": active_trades})
-                send_telegram(f"🚀 **انفجار مؤكد (v14)**\n🪙 #{symbol}\n📈 الفوليوم: `قوي ✅` | السوق: `آمن ✅`")
+            # شروط الانفجار الصارمة
+            if last['bw'] < 0.022 and last['c'] > last['upper']:
+                # حساب RSI سريع
+                delta = df['c'].diff(); g = (delta.where(delta > 0, 0)).rolling(14).mean(); l = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                rsi = 100 - (100 / (1 + (g / l))).iloc[-1]
+                
+                if 58 < rsi < 75:
+                    trade_size = CURRENT_BALANCE * 0.20 # دخول بـ 20% لكل صفقة
+                    active_trades[symbol] = {
+                        'entry_price': last['c'],
+                        'sl': last['c'] * (1 - BUFFER_PCT),
+                        'invested_amount': trade_size,
+                        'is_secured': False, 'is_partial_tp': False
+                    }
+                    save_db({"balance": CURRENT_BALANCE, "active_trades": active_trades})
+                    send_telegram(f"🚀 **قنص انفجار (v14.1)**\n🪙 #{symbol}\n📈 السيولة: `قوية ✅` | النطاق: `ضيق جداً ✅` \n🛡️ الوقف الملاحق: `4%` | الرصيد المخصص: `${trade_size:.2f}`")
     except Exception as e: logger.error(f"Scan Error: {e}")
 
-def rsi_calc(df):
-    delta = df['c'].diff(); gain = (delta.where(delta > 0, 0)).rolling(14).mean(); loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    return 100 - (100 / (1 + (gain / loss))).iloc[-1]
+# --- نظام التقارير الساعية ---
+def send_hourly_report():
+    global total_scans_last_hour, CURRENT_BALANCE
+    now = datetime.now().strftime("%H:%M")
+    
+    if not active_trades:
+        msg = (f"🔍 **نبض الرادار ({now})**\n━━━━━━━━━━━━━━\n"
+               f"✅ البوت يعمل ويبحث عن فرص.\n"
+               f"📡 تم فحص `{total_scans_last_hour}` عملة في الساعة الأخيرة.\n"
+               f"⚠️ الحالة: انتظار انفجار سعري يطابق الشروط.\n"
+               f"💰 الرصيد المتوفر: `${CURRENT_BALANCE:.2f}`")
+    else:
+        msg = f"📊 **متابعة الصفقات ({now})**\n━━━━━━━━━━━━━━\n"
+        for s, data in active_trades.items():
+            try:
+                curr_p = ccxt.binance().fetch_ticker(s)['last']
+                p_pct = ((curr_p - data['entry_price']) / data['entry_price']) * 100
+                msg += f"🪙 {s}: `{p_pct:+.2f}%` \n"
+            except: pass
+        msg += f"━━━━━━━━━━━━━━\n🏦 إجمالي المحفظة: `${CURRENT_BALANCE:.2f}`"
 
-# --- المجدول والتشغيل ---
+    send_telegram(msg)
+    total_scans_last_hour = 0
+
+# --- تشغيل المجدول ---
 scheduler = BackgroundScheduler(daemon=True)
 scheduler.add_job(scan_for_signals, 'interval', minutes=2)
+scheduler.add_job(send_hourly_report, 'interval', hours=1)
 scheduler.start()
 
 @app.route('/')
-def home(): return f"Ultimate Bot v14 - Balance: ${CURRENT_BALANCE:.2f}"
+def home(): return f"v14.1 Active - Scanned symbols: 100 - Balance: ${CURRENT_BALANCE:.2f}"
 
 if __name__ == "__main__":
-    send_telegram(f"💎 **تشغيل النسخة المتكاملة v14.0**\nكل أنظمة الأمان (بيتكوين، فوليوم، تأمين، جني جزئي) نشطة.")
+    send_telegram(f"💎 **إطلاق النسخة v14.1 الملكية**\nنطاق المسح: `100 عملة` | الحماية: `نشطة`\nبانتظار أول صيد ثقيل! 🦅")
     scan_for_signals()
     app.run(host='0.0.0.0', port=10000)
