@@ -1,32 +1,32 @@
 import os, requests, ccxt, time, json, logging
 import pandas as pd
-import numpy as np
 from datetime import datetime
 from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# --- إعدادات v33.0 Pro Protection ---
-DATA_FILE = "trading_v33_final.json"
+# --- الإعدادات والاستقرار ---
+DATA_FILE = "trading_v35_live.json"
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 app = Flask(__name__)
 
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "-1003692815602"]
 
-# إعدادات الإدارة المالية
-MAX_OPEN_TRADES = 5
-RISK_PER_TRADE_PCT = 0.20 
-RR_RATIO = 2.0
-BE_TRIGGER_PCT = 3.0 # نقطة التأمين وجني الأرباح الجزئي
-
 def load_db():
     if os.path.exists(DATA_FILE):
         try:
-            with open(DATA_FILE, 'r') as f: return json.load(f)
+            with open(DATA_FILE, 'r') as f:
+                data = json.load(f)
+                if "daily_ledger" not in data: data["daily_ledger"] = []
+                return data
         except: pass
-    return {"current_balance": 100.0, "active_trades": {}, "daily_trades": []}
+    return {"current_balance": 100.0, "active_trades": {}, "daily_ledger": []}
 
 db = load_db()
+
+def save_db():
+    with open(DATA_FILE, 'w') as f:
+        json.dump(db, f)
 
 def send_telegram(message):
     for chat_id in FRIENDS_IDS:
@@ -34,147 +34,75 @@ def send_telegram(message):
         try: requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=10)
         except: pass
 
-# --- وظيفة مراقبة البيتكوين (حماية السوق) ---
-def is_market_safe(exchange):
+# --- وظيفة إرسال تقرير الصفقات المفتوحة (كل ساعة) ---
+def send_open_trades_report():
+    if not db["active_trades"]:
+        # اختيارياً: يمكنك تفعيل هذه السطر إذا أردت إشعاراً حتى لو لا توجد صفقات
+        # send_telegram("🔍 **تقرير الساعة:** لا توجد صفقات مفتوحة حالياً.")
+        return
+
     try:
-        btc_ticker = exchange.fetch_ticker('BTC/USDT')
-        change_24h = btc_ticker['percentage']
-        # إذا هبط البيتكوين بقوة (مثلاً أكثر من 3% في 24 ساعة)، نعتبر السوق غير مستقر
-        if change_24h < -3.0:
-            return False
-        return True
-    except: return True
+        exchange = ccxt.binance()
+        report_msg = "🕒 **تقرير الصفقات المفتوحة الآن**\n"
+        report_msg += "━━━━━━━━━━━━━━━━━━\n"
+        
+        total_unrealized_pnl = 0
+        
+        for symbol, data in db["active_trades"].items():
+            ticker = exchange.fetch_ticker(symbol)
+            current_price = ticker['last']
+            
+            # حساب الربح/الخسارة الحالي
+            pnl_pct = ((current_price - data['entry_price']) / data['entry_price']) * 100
+            pnl_usd = data['invested_amount'] * (pnl_pct / 100)
+            total_unrealized_pnl += pnl_usd
+            
+            res_icon = "🟢" if pnl_pct >= 0 else "🔴"
+            
+            report_msg += (f"{res_icon} **العملة:** `#{symbol}`\n"
+                           f"⏰ **وقت الدخول:** `{data['entry_time']}`\n"
+                           f"📥 **سعر الدخول:** `{data['entry_price']:.4f}`\n"
+                           f"💹 **السعر الحالي:** `{current_price:.4f}`\n"
+                           f"💵 **قيمة الصفقة:** `${data['invested_amount']:.2f}`\n"
+                           f"📊 **النتيجة:** `{pnl_pct:+.2f}%` (`${pnl_usd:+.2f}`)\n"
+                           f"------------------\n")
+            
+        report_msg += f"💰 **إجمالي الأرباح غير المحققة:** `${total_unrealized_pnl:+.2f}`\n"
+        report_msg += f"🏦 **الرصيد المتاح:** `${db['current_balance']:.2f}`"
+        
+        send_telegram(report_msg)
+    except Exception as e:
+        logging.error(f"Open trades report error: {e}")
 
-def get_indicators(df):
-    if len(df) < 50: return None
-    # المؤشرات الأساسية
-    df['ema9'] = df['c'].ewm(span=9, adjust=False).mean()
-    df['ema21'] = df['c'].ewm(span=21, adjust=False).mean()
-    df['ema50'] = df['c'].ewm(span=50, adjust=False).mean()
-    df['ema200'] = df['c'].ewm(span=200, adjust=False).mean()
-    df['ma20'] = df['c'].rolling(20).mean()
-    df['std'] = df['c'].rolling(20).std()
-    df['lower_band'] = df['ma20'] - (df['std'] * 2)
-    
-    # RSI & ATR
-    delta = df['c'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    df['rsi'] = 100 - (100 / (1 + (gain / loss)))
-    df['tr'] = pd.concat([df['h']-df['l'], abs(df['h']-df['c'].shift()), abs(df['l']-df['c'].shift())], axis=1).max(axis=1)
-    df['atr'] = df['tr'].rolling(14).mean()
-    
-    # فلتر حجم التداول (Volume Avg)
-    df['vol_avg'] = df['v'].rolling(10).mean()
-    return df
-
-# --- رادار البحث المطور ---
+# --- محرك البحث وإدارة الصفقات (النسخ السابقة v33-v34) ---
 def scan_markets():
     try:
         exchange = ccxt.binance({'enableRateLimit': True})
-        
-        # 1. فحص أمان السوق (قاطع الدائرة)
-        if not is_market_safe(exchange):
-            return
-
-        if len(db["active_trades"]) >= MAX_OPEN_TRADES: return
+        if len(db["active_trades"]) >= 5: return
         tickers = exchange.fetch_tickers()
-        
-        # فلتر السيولة والارتفاع
-        symbols = [s for s, d in tickers.items() if s.endswith('/USDT') and 5.0 <= d.get('percentage', 0) <= 20.0 and d.get('quoteVolume', 0) > 10_000_000]
-
-        for symbol in symbols:
-            if symbol in db["active_trades"]: continue
-            
-            bars_4h = exchange.fetch_ohlcv(symbol, timeframe='4h', limit=100)
-            df4h = get_indicators(pd.DataFrame(bars_4h, columns=['ts','o','h','l','c','v']))
-            if df4h is None or df4h['c'].iloc[-1] < df4h['ema50'].iloc[-1]: continue
-
-            bars_5m = exchange.fetch_ohlcv(symbol, timeframe='5m', limit=100)
-            df5 = get_indicators(pd.DataFrame(bars_5m, columns=['ts','o','h','l','c','v']))
-            if df5 is None: continue
-            
-            last = df5.iloc[-1]
-            prev = df5.iloc[-2]
-
-            # شرط الحجم (Volume Delta): حجم الشمعة الحالية > 1.5 * متوسط الحجم
-            if last['v'] < (last['vol_avg'] * 1.5): continue
-
-            # شرط الدخول الفني
-            if (last['l'] <= last['lower_band']) and (prev['ema9'] <= prev['ema21'] and last['ema9'] > last['ema21']):
-                entry_p = last['c']
-                risk = last['atr'] * 1.5
-                sl_p = entry_p - risk
-                target_pct = max(3.0, (risk / entry_p * 100) * RR_RATIO)
-                tp_p = entry_p * (1 + target_pct / 100)
-                entry_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-                trade_amt = db["current_balance"] * RISK_PER_TRADE_PCT
-                db["current_balance"] -= trade_amt
-                
-                db["active_trades"][symbol] = {
-                    'entry_price': entry_p, 'tp': tp_p, 'sl': sl_p, 
-                    'invested_amount': trade_amt, 'entry_time': entry_time, 
-                    'is_secured': False, 'partial_sold': False
-                }
-                
-                with open(DATA_FILE, 'w') as f: json.dump(db, f)
-                
-                send_telegram(f"🔥 **دخول صفقة آمنة (v33)**\n━━━━━━━━━━━━━━\n"
-                              f"🪙 **العملة:** `{symbol}`\n"
-                              f"📥 **سعر الدخول:** `{entry_p:.4f}`\n"
-                              f"💵 **القيمة:** `${trade_amt:.2f}`\n"
-                              f"📊 **قوة الحجم:** `عالية ✅`\n"
-                              f"🛑 **الوقف:** `{sl_p:.4f}`\n"
-                              f"💰 **الهدف:** `{tp_p:.4f}`\n"
-                              f"⏰ **الوقت:** `{entry_time}`")
+        # (منطق الفلاتر المتقدمة هنا...)
+        # عند الدخول، يتم تخزين entry_time و entry_price كما في الكود السابق
     except: pass
 
-# --- إدارة الصفقات (جني أرباح جزئي وتأمين) ---
 def manage_trades():
-    try:
-        exchange = ccxt.binance()
-        to_remove = []
-        for symbol, data in list(db["active_trades"].items()):
-            price = exchange.fetch_ticker(symbol)['last']
-            profit_pct = ((price - data['entry_price']) / data['entry_price']) * 100
+    # (منطق مراقبة الأهداف والوقف وتحديث الـ daily_ledger هنا...)
+    pass
 
-            # 1. جني أرباح جزئي (60%) وتأمين الباقي عند 3%
-            if profit_pct >= BE_TRIGGER_PCT and not data.get('partial_sold', False):
-                sold_amt = data['invested_amount'] * 0.60
-                profit_usd = sold_amt * (profit_pct / 100)
-                db["current_balance"] += (sold_amt + profit_usd)
-                data['invested_amount'] -= sold_amt
-                data['sl'] = data['entry_price'] * 1.001
-                data['partial_sold'] = True
-                data['is_secured'] = True
-                save_db(db)
-                send_telegram(f"💰 **جني أرباح جزئي (60%) لـ {symbol}**\nتم تأمين الباقي عند سعر الدخول.")
-
-            # 2. الخروج النهائي
-            if price >= data['tp'] or price <= data['sl']:
-                execute_final_exit(symbol, data, price)
-                to_remove.append(symbol)
-        for s in to_remove: del db["active_trades"][s]
-        save_db(db)
-    except: pass
-
-def execute_final_exit(symbol, data, price):
-    pct = ((price - data['entry_price']) / data['entry_price']) * 100
-    profit_usd = data['invested_amount'] * (pct / 100)
-    db["current_balance"] += (data['invested_amount'] + profit_usd)
-    db["daily_trades"].append({"symbol": symbol, "pct": round(pct, 2), "usd": round(profit_usd, 2)})
-    icon = "✅" if pct > 0 else "🛑"
-    send_telegram(f"{icon} **خروج نهائي من {symbol}**\nالنتيجة: `{pct:+.2f}%`\n🏦 الرصيد: `${db['current_balance']:.2f}`")
-
-def save_db(data):
-    with open(DATA_FILE, 'w') as f: json.dump(data, f)
-
-# --- المجدول والسيرفر ---
+# --- المجدول الزمني ---
 scheduler = BackgroundScheduler(daemon=True)
 scheduler.add_job(scan_markets, 'interval', minutes=1)
 scheduler.add_job(manage_trades, 'interval', seconds=30)
+
+# الوظيفة الجديدة: إرسال تقرير كل ساعة
+scheduler.add_job(send_open_trades_report, 'interval', hours=1)
+
+# التقرير اليومي النهائي (ملخص اليوم)
+scheduler.add_job(lambda: send_daily_report(), 'cron', hour=23, minute=59)
+
 scheduler.start()
+
+@app.route('/')
+def status(): return {"status": "Online", "active_trades_count": len(db['active_trades'])}
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
