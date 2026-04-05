@@ -31,7 +31,7 @@ def run_web_server():
 
 # --- 3. إعدادات استراتيجية التداول ---
 exchange = ccxt.binance({'enableRateLimit': True})
-VIRTUAL_BALANCE = 100.0   
+VIRTUAL_BALANCE = 500.0   
 PERCENT_PER_TRADE = 0.20 
 MAX_TRADES = 5           
 TARGET_PROFIT = 1.04     
