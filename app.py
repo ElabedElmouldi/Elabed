@@ -18,7 +18,7 @@ def send_telegram(message):
             requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=10)
         except: pass
 
-# --- 2. الإعدادات المالية (20 صفقة × 25$) ---
+# --- 2. الإعدادات المالية والفلترة ---
 MAX_TRADES = 20
 TRADE_AMOUNT = 25
 STOP_LOSS_PCT = 0.03
@@ -26,7 +26,15 @@ ACTIVATION_PCT = 0.025
 TRAILING_CALLBACK = 0.01
 MAX_24H_CHANGE = 0.10
 
-BLACKLIST = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT', 'USDC/USDT', 'FDUSD/USDT']
+# القائمة السوداء الموسعة (مستقرة، قيادية، ثقيلة)
+BLACKLIST = [
+    'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT', 'ADA/USDT', 'DOT/USDT', 'LTC/USDT',
+    'USDC/USDT', 'FDUSD/USDT', 'USDP/USDT', 'TUSD/USDT', 'DAI/USDT', 'EUR/USDT', 
+    'USD1/USDT', 'USDE/USDT', 'PYUSD/USDT', 'USTC/USDT', 'BUSD/USDT', 'AEUR/USDT',
+    'USDS/USDT', 'USDSB/USDT', 'EURI/USDT', 'USDT/DAI', 'USDT/USDC',
+    'WBTC/USDT', 'WETH/USDT', 'PAXG/USDT', 'RETH/USDT', 'STETH/USDT'
+]
+
 VOL_MIN = 10000000 
 VOL_MAX = 400000000 
 
@@ -34,63 +42,70 @@ exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'sp
 active_trades = {}
 last_open_report_1h = datetime.now()
 
-# وظيفة مساعدة لحساب المؤشرات
 def get_indicators(df):
     close = df['c']
     ema50 = close.ewm(span=50, adjust=False).mean()
     ema20 = close.ewm(span=20, adjust=False).mean()
-    # RSI مبسط
     delta = close.diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rsi = 100 - (100 / (1 + (gain / loss.replace(0, 0.1))))
-    return ema50, ema20, rsi
+    macd = close.ewm(span=12).mean() - close.ewm(span=26).mean()
+    signal = macd.ewm(span=9).mean()
+    return ema50, ema20, rsi, macd, signal
 
-# --- 3. محرك التحليل المتعدد (1h & 15m) ---
-def analyze_multi_tf(symbol, change_24h):
+# --- 3. محرك التحليل (المنطق الإلزامي 1h + 15m) ---
+def analyze_v11_9(symbol, change_24h):
+    # فلتر الصعود المسبق
     if change_24h >= MAX_24H_CHANGE: return {'ready': False}
     
     try:
-        # جلب بيانات الساعة (الاتجاه العام)
-        bars_1h = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=50)
+        # بيانات 1 ساعة (الاتجاه)
+        bars_1h = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=60)
         df_1h = pd.DataFrame(bars_1h, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-        ema50_1h, _, rsi_1h = get_indicators(df_1h)
+        ema50_1h, _, rsi_1h, _, _ = get_indicators(df_1h)
 
-        # جلب بيانات 15 دقيقة (التنفيذ)
+        # بيانات 15 دقيقة (التنفيذ)
         bars_15m = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=100)
         df_15m = pd.DataFrame(bars_15m, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-        ema50_15m, ema20_15m, rsi_15m = get_indicators(df_15m)
+        ema50_15m, ema20_15m, rsi_15m, macd, macd_sig = get_indicators(df_15m)
+
+        # [شروط إلزامية]
+        # 1. الاتجاه العام صاعد (إلزامي)
+        if df_1h['c'].iloc[-1] <= ema50_1h.iloc[-1]: return {'ready': False}
         
+        # 2. انفجار سيولة لحظي (إلزامي)
+        vol_avg = df_15m['v'].iloc[-20:-1].mean()
+        if df_15m['v'].iloc[-1] < vol_avg * 1.5: return {'ready': False}
+
+        # [نظام النقاط المساعدة - يحتاج 5/8]
         score = 0
-        # شروط فريم الساعة (3 نقاط)
-        if df_1h['c'].iloc[-1] > ema50_1h.iloc[-1]: score += 1      # الاتجاه صاعد على الساعة
-        if rsi_1h.iloc[-1] > 50: score += 1                         # الزخم إيجابي على الساعة
-        if df_1h['c'].iloc[-1] > df_1h['o'].iloc[-1]: score += 1    # شمعة الساعة الحالية خضراء
+        if rsi_1h.iloc[-1] > 50: score += 1
+        if df_15m['c'].iloc[-1] > ema20_15m.iloc[-1]: score += 1
+        if 48 < rsi_15m.iloc[-1] < 72: score += 1
+        if macd.iloc[-1] > macd_sig.iloc[-1]: score += 1
+        if ema20_15m.iloc[-1] > ema50_15m.iloc[-1]: score += 1
+        if df_15m['c'].iloc[-1] > df_15m['o'].iloc[-1]: score += 1
+        if rsi_15m.iloc[-1] > rsi_15m.iloc[-2]: score += 1
+        if df_1h['c'].iloc[-1] > df_1h['o'].iloc[-1]: score += 1
 
-        # شروط فريم 15 دقيقة (7 نقاط)
-        if df_15m['c'].iloc[-1] > ema20_15m.iloc[-1]: score += 1    # فوق المتوسط السريع
-        if 48 < rsi_15m.iloc[-1] < 70: score += 1                   # RSI في منطقة ذهبية
-        if df_15m['v'].iloc[-1] > df_15m['v'].iloc[-20:-1].mean() * 1.5: score += 1 # سيولة
-        if df_15m['c'].iloc[-1] > df_15m['o'].iloc[-1]: score += 1  # شمعة صاعدة
-        if rsi_15m.iloc[-1] > rsi_15m.iloc[-2]: score += 1          # صعود القوة الشرائية
-        if ema20_15m.iloc[-1] > ema50_15m.iloc[-1]: score += 1      # تقاطع إيجابي
-        if df_15m['c'].iloc[-1] > df_15m['l'].iloc[-1] + (df_15m['h'].iloc[-1]-df_15m['l'].iloc[-1])*0.7: score += 1 # إغلاق قوي
-
-        if score >= 7:
-            return {'price': df_15m['c'].iloc[-1], 'score': score, 'ready': True}
+        if score >= 5:
+            # النتيجة النهائية: 2 (إلزامي) + 5 (نقاط) = 7 من 10
+            return {'price': df_15m['c'].iloc[-1], 'score': score + 2, 'ready': True}
+            
     except: pass
     return {'ready': False}
 
 # --- 4. المحرك التنفيذي ---
 def main_engine():
     global last_open_report_1h
-    send_telegram("🧬 *v11.6 Multi-Timeframe System Active*\n- الفلاتر: `1h Trend + 15m Entry`\n- المعيار: `7/10 مؤشرات مركبة`")
+    send_telegram("🧬 *v11.9 Final Logic Deployed*\n- الشروط الإلزامية: `نشطة ✅`\n- استبعاد المستقرة: `USD1 + 25 عملة ✅`\n- المحفظة: `20 صفقة فريدة ✅`")
 
     while True:
         try:
             now = datetime.now()
 
-            # التتبع كل 10 ثوانٍ
+            # أ. التتبع السريع والبيع (كل 10 ثوانٍ)
             for _ in range(6):
                 for symbol in list(active_trades.keys()):
                     try:
@@ -101,7 +116,7 @@ def main_engine():
                         
                         if not trade['trailing_active'] and curr_p >= trade['entry'] * (1 + ACTIVATION_PCT):
                             trade['trailing_active'] = True
-                            send_telegram(f"⚡ *ملاحقة:* `{symbol}`")
+                            send_telegram(f"🚀 *Trailing Start:* `{symbol}`")
 
                         reason = ""
                         if not trade['trailing_active'] and curr_p <= trade['sl']: reason = "🛑 SL"
@@ -114,17 +129,18 @@ def main_engine():
                     except: continue
                 time.sleep(10)
 
-            # فتح صفقات جديدة
+            # ب. فحص السوق لفتح صفقات جديدة
             if len(active_trades) < MAX_TRADES:
                 tickers = exchange.fetch_tickers()
+                # تصفية أولية (USDT فقط، ليس في القائمة السوداء، سيولة محددة)
                 potential = [s for s, d in tickers.items() if '/USDT' in s and s not in BLACKLIST and VOL_MIN < d['quoteVolume'] < VOL_MAX]
                 
-                for s in potential[:100]:
-                    if s in active_trades: continue
+                for s in potential[:120]:
+                    if s in active_trades: continue # منع دخول نفس العملة مرتين
                     if len(active_trades) >= MAX_TRADES: break
                         
                     change_24h = tickers[s]['percentage'] / 100
-                    sig = analyze_multi_tf(s, change_24h)
+                    sig = analyze_v11_9(s, change_24h)
                     
                     if sig and sig['ready']:
                         entry_p = sig['price']
@@ -133,16 +149,30 @@ def main_engine():
                             'highest_p': entry_p, 'trailing_active': False, 
                             'start_dt': now, 'start_time': now.strftime("%H:%M:%S")
                         }
-                        send_telegram(f"💎 *Entry ({sig['score']}/10)*\n🪙 `{s}` | 💵 `{entry_p}`\n🛑 SL: `{entry_p*0.97:.6f}`\n🧬 *Multi-TF Verified*")
+                        # إشعار الدخول التفصيلي
+                        msg = (
+                            f"💎 *Entry Verified ({sig['score']}/10)*\n"
+                            f"━━━━━━━━━━━━━━\n"
+                            f"🪙 العملة: `{s}`\n"
+                            f"⏰ الوقت: `{now.strftime('%H:%M:%S')}`\n"
+                            f"💵 الدخول: `{entry_p}`\n"
+                            f"🛑 الوقف: `{entry_p*0.97:.6f}`\n"
+                            f"🎯 الهدف الأولي: `{entry_p*1.025:.6f}`\n"
+                            f"📊 Vol Spike: `OK` ✅\n"
+                            f"📈 1h Trend: `UP` ✅"
+                        )
+                        send_telegram(msg)
 
-            # تقرير الساعة
+            # ج. تقرير الساعة التراكمي
             if now >= last_open_report_1h + timedelta(hours=1):
                 if active_trades:
-                    report = "📂 *تقرير الصفقات (ساعة):*\n"
+                    report = "📂 *تقرير الصفقات النشطة (GMT+1):*\n"
                     for s, d in active_trades.items():
-                        cp = exchange.fetch_ticker(s)['last']
-                        pnl = (cp - d['entry']) / d['entry'] * 100
-                        report += f"🔹 `{s}` | `{pnl:+.2f}%` | ⏳ `{str(now - d['start_dt']).split('.')[0]}`\n"
+                        try:
+                            cp = exchange.fetch_ticker(s)['last']
+                            pnl = (cp - d['entry']) / d['entry'] * 100
+                            report += f"🔹 `{s}` | `{pnl:+.2f}%` | ⏳ `{str(now - d['start_dt']).split('.')[0]}`\n"
+                        except: continue
                     send_telegram(report)
                 last_open_report_1h = now
 
@@ -151,7 +181,7 @@ def main_engine():
 if __name__ == "__main__":
     app = Flask('')
     @app.route('/')
-    def h(): return f"Multi-TF v11.6 | {len(active_trades)} Trades"
+    def h(): return f"v11.9 Stable | Trades: {len(active_trades)}/20"
     port = int(os.environ.get("PORT", 5000))
     Thread(target=lambda: app.run(host='0.0.0.0', port=port)).start()
     main_engine()
