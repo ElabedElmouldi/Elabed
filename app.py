@@ -23,21 +23,35 @@ def send_telegram_to_all(message):
 # --- 2. خادم الويب (Keep-Alive) ---
 app = Flask('')
 @app.route('/')
-def home(): return "🚀 Bot is Active!"
+def home(): return f"🚀 Bot Status: Active - {datetime.now().strftime('%H:%M:%S')}"
 
 def run_web_server():
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
 
-# --- 3. إعدادات البوت ---
+# --- 3. إعدادات محرك التداول ---
 exchange = ccxt.binance({'enableRateLimit': True})
 VIRTUAL_BALANCE = 100.0
 PERCENT_PER_TRADE = 0.20
 MAX_TRADES = 5
 TARGET_PROFIT = 1.04
 STOP_LOSS = 0.98
+MIN_VOLUME = 10000000
 
 active_trades = []
 daily_closed_trades = []
+
+def get_top_gainers():
+    try:
+        tickers = exchange.fetch_tickers()
+        gainers = []
+        exclude = ['BTC/USDT', 'ETH/USDT', 'USDC/USDT', 'FDUSD/USDT', 'DAI/USDT']
+        for s, d in tickers.items():
+            if '/USDT' in s and s not in exclude and d['quoteVolume'] > MIN_VOLUME:
+                gainers.append({'symbol': s, 'percentage': d['percentage']})
+        gainers.sort(key=lambda x: x['percentage'], reverse=True)
+        return [item['symbol'] for item in gainers[:100]]
+    except: return []
 
 def get_indicators(symbol):
     try:
@@ -52,63 +66,78 @@ def get_indicators(symbol):
         return df.iloc[-1]
     except: return None
 
-def send_open_trades_report():
-    """تقرير الصفقات المفتوحة كل ساعتين"""
-    if not active_trades:
-        send_telegram_to_all("🔍 *تقرير الصفقات المفتوحة:* \nلا توجد صفقات مفتوحة حالياً.")
-        return
+# --- 4. وظائف التقارير الذكية ---
 
-    report = "📋 *تقرير الصفقات المفتوحة (كل ساعتين)* \n\n"
+def send_open_trades_report():
+    """تقرير الصفقات المفتوحة - يُرسل كل ساعتين"""
+    if not active_trades:
+        send_telegram_to_all("🔍 *تقرير الصفقات:* \nلا توجد صفقات مفتوحة حالياً، البوت في وضع الاستعداد.")
+        return
+    
+    report = "📋 *تقرير الصفقات المفتوحة حالياً* \n\n"
     tickers = exchange.fetch_tickers()
-    
     for t in active_trades:
-        current_price = tickers[t['symbol']]['last']
-        pnl_perc = ((current_price - t['entry_price']) / t['entry_price']) * 100
-        # نعتبر الصفقة مؤمنة إذا ارتفعت أكثر من 1.5% من سعر الدخول
-        is_secured = "✅ نعم" if pnl_perc >= 1.5 else "❌ لا"
-        
-        report += f"🪙 *العملة:* `{t['symbol']}` \n"
-        report += f"💰 *القيمة:* `{t['cost']:.2f}$` \n"
-        report += f"⏰ *الدخول:* `{t['open_time'].strftime('%H:%M')}` \n"
-        report += f"💵 *سعر الدخول:* `{t['entry_price']:.4f}` \n"
-        report += f"📈 *النتيجة العائمة:* `{pnl_perc:+.2f}%` \n"
-        report += f"🛡️ *تأمين الصفقة:* {is_secured} \n"
-        report += f"--- \n"
-    
+        curr = tickers[t['symbol']]['last']
+        pnl = ((curr - t['entry_price']) / t['entry_price']) * 100
+        secured = "✅ نعم" if pnl >= 1.5 else "❌ لا"
+        report += f"🪙 `{t['symbol']}` | الربح: `{pnl:+.2f}%` \n🛡️ تأمين: {secured} | القيمة: `{t['cost']:.2f}$` \n\n"
     send_telegram_to_all(report)
 
 def run_trading_logic():
     global VIRTUAL_BALANCE
     last_daily_report = datetime.now().date()
     last_2h_report = datetime.now()
+    last_1h_heartbeat = datetime.now() # مؤقت إشعار الساعة
 
-    send_telegram_to_all("🟢 *انطلق البوت!* \nتقرير دوري كل ساعتين + تقرير يومي عند الإغلاق.")
+    send_telegram_to_all("🟢 *تم تشغيل البوت بنجاح!* \nسأرسل إشعاراً كل ساعة لتأكيد العمل.")
 
     while True:
         try:
             now = datetime.now()
 
-            # 1. إرسال تقرير الصفقات المفتوحة كل ساعتين
+            # 1. إشعار "البوت يعمل" كل ساعة (Heartbeat)
+            if now >= last_1h_heartbeat + timedelta(hours=1):
+                msg = f"📡 *إشعار روتيني:* \nالبوت يعمل بنجاح ويقوم بمسح السوق الآن.. \n⏰ الوقت: `{now.strftime('%H:%M')}`"
+                send_telegram_to_all(msg)
+                last_1h_heartbeat = now
+
+            # 2. تقرير الصفقات المفتوحة كل ساعتين
             if now >= last_2h_report + timedelta(hours=2):
                 send_open_trades_report()
                 last_2h_report = now
 
-            # 2. جلب العملات والبحث عن دخول
-            symbols = [s for s, d in exchange.fetch_tickers().items() if '/USDT' in s and d['quoteVolume'] > 10000000]
-            # (نفس منطق الفلترة لـ Top 100 Gainers هنا...)
-
+            # 3. منطق البحث والدخول في الصفقات
+            symbols = get_top_gainers()
             if len(active_trades) < MAX_TRADES:
                 entry_amount = VIRTUAL_BALANCE * PERCENT_PER_TRADE
-                # ... (كود البحث عن دخول RSI + Bollinger) ...
-                # ملاحظة: تأكد من إضافة 'open_time': datetime.now() عند تعريف أي صفقة جديدة
+                for symbol in symbols:
+                    if symbol in [t['symbol'] for t in active_trades]: continue
+                    if len(active_trades) >= MAX_TRADES: break
+                    
+                    data = get_indicators(symbol)
+                    if data is not None and data['rsi'] <= 45 and data['close'] <= data['ma']:
+                        new_trade = {
+                            'symbol': symbol, 'entry_price': data['close'],
+                            'target': data['close'] * TARGET_PROFIT,
+                            'stop': data['close'] * STOP_LOSS,
+                            'cost': entry_amount, 'open_time': datetime.now()
+                        }
+                        active_trades.append(new_trade)
+                        VIRTUAL_BALANCE -= entry_amount
+                        send_telegram_to_all(f"🔔 *دخول صفقة:* `{symbol}` بسعر `{data['close']:.4f}`")
 
-            # 3. مراقبة الإغلاق
+            # 4. مراقبة الإغلاق
             if active_trades:
                 tickers = exchange.fetch_tickers()
                 for trade in active_trades[:]:
                     p_now = tickers[trade['symbol']]['last']
                     if p_now >= trade['target'] or p_now <= trade['stop']:
-                        # ... (كود الإغلاق وحفظ البيانات للتقرير اليومي) ...
+                        is_win = p_now >= trade['target']
+                        profit = trade['cost'] * (TARGET_PROFIT - 1) if is_win else -(trade['cost'] * (1 - STOP_LOSS))
+                        VIRTUAL_BALANCE += (trade['cost'] + profit)
+                        
+                        icon = "✅" if is_win else "🛑"
+                        send_telegram_to_all(f"{icon} *إغلاق صفقة:* `{trade['symbol']}` \nالربح: `{profit:+.2f}$` \nالرصيد: `{VIRTUAL_BALANCE:.2f}$`")
                         active_trades.remove(trade)
 
             time.sleep(45)
