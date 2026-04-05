@@ -1,14 +1,12 @@
 import ccxt
 import pandas as pd
 import time
-import json
 from datetime import datetime, timedelta
 from flask import Flask
 from threading import Thread
-import os
 import requests
 
-# --- 1. إعدادات التلجرام (تأكد من وضع بياناتك هنا) ---
+# --- 1. إعدادات التلجرام (بياناتك الخاصة) ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "2107567005"]
 
@@ -19,175 +17,164 @@ def send_telegram(message):
             requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=10)
         except: pass
 
-# --- 2. إدارة الحالة والذاكرة ---
-STATE_FILE = "bot_state.json"
-
-def save_state(trades, balance, stats):
-    state = {
-        'trades': [],
-        'current_balance': balance,
-        'stats': stats,
-        'last_report_date': stats.get('last_report_date', datetime.now().isoformat())
-    }
-    for t in trades:
-        temp = t.copy()
-        if isinstance(temp['open_time'], datetime): temp['open_time'] = temp['open_time'].isoformat()
-        state['trades'].append(temp)
-    with open(STATE_FILE, 'w') as f: json.dump(state, f)
-
-def load_state():
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, 'r') as f:
-                data = json.load(f)
-                trades = data.get('trades', [])
-                for t in trades: t['open_time'] = datetime.fromisoformat(t['open_time'])
-                stats = data.get('stats', {'wins': 0, 'losses': 0, 'total_pnl': 0, 'last_report_date': datetime.now().isoformat()})
-                return trades, data.get('current_balance', 500.0), stats
-        except: pass
-    return [], 500.0, {'wins': 0, 'losses': 0, 'total_pnl': 0, 'last_report_date': datetime.now().isoformat()}
-
-# --- 3. خادم الويب (Render Keep-Alive) ---
-app = Flask('')
-@app.route('/')
-def home(): return f"🚀 Sniper v5.3 Full Detail | {datetime.now().strftime('%H:%M:%S')}"
-
-# --- 4. الإعدادات الهجومية (Mid-Cap Sniper) ---
-MAX_TRADES = 5
-PERCENT_PER_TRADE = 0.20
-TRAILING_CALLBACK = 0.008 
-MIN_WIDTH = 0.045
-MIN_VOL = 15000000    # 15 مليون دولار
-MAX_VOL = 500000000   # 500 مليون دولار (استبعاد العملات الضخمة)
+# --- 2. الإعدادات المالية والفنية ---
+MAX_TRADES = 20               # الحد الأقصى للصفقات المفتوحة
+TRADE_AMOUNT = 25             # مبلغ الدخول لكل صفقة (دولار)
+TAKE_PROFIT_PCT = 0.03        # هدف الربح 3%
+STOP_LOSS_PCT = 0.03          # وقف الخسارة 3%
+VOL_MIN = 15000000            # الحد الأدنى للسيولة (15 مليون $)
+VOL_MAX = 500000000           # الحد الأقصى (استبعاد العملات الكبيرة)
 
 exchange = ccxt.binance({'enableRateLimit': True})
-active_trades, CURRENT_TOTAL_BALANCE, stats = load_state()
 
-# --- 5. وظائف التحليل الفني ---
-def get_analysis(symbol):
+# إدارة البيانات الحية
+active_trades = {}            # { 'SYMBOL': {entry, tp, sl, start_time} }
+daily_closed_trades = []      # سجل الصفقات المغلقة اليوم
+last_report_1h = datetime.now()
+last_radar_scan = datetime.now()
+
+# --- 3. خوارزمية البحث المتطورة (Advanced Explosion Search) ---
+def analyze_signal_pro(symbol):
     try:
-        bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=50)
+        # جلب 100 شمعة لتحليل أدق للاتجاه والضغط
+        bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=100)
         df = pd.DataFrame(bars, columns=['t', 'o', 'h', 'l', 'c', 'v'])
+        
+        # أ. حساب ضغط البولنجر (Squeeze)
         df['ma20'] = df['c'].rolling(20).mean()
         df['std'] = df['c'].rolling(20).std()
-        df['lower'] = df['ma20'] - (df['std'] * 2)
-        df['upper'] = df['ma20'] + (df['std'] * 2)
+        # عرض النطاق (Width)
+        df['width'] = (df['std'] * 4) / df['ma20']
         
-        last = df.iloc[-1]
-        width = (last['upper'] - last['lower']) / last['ma20']
+        # ب. حساب قوة السيولة (Volume Force)
+        # مقارنة الفوليوم الحالي بمتوسط الـ 5 شمعات السابقة مباشرة
+        recent_vol_avg = df['v'].iloc[-6:-1].mean()
+        current_vol = df['v'].iloc[-1]
         
+        # ج. حساب مؤشر RSI (الزخم)
         delta = df['c'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rsi = 100 - (100 / (1 + (gain / loss))).iloc[-1]
-        
-        return {'price': last['c'], 'lower': last['lower'], 'upper': last['upper'], 'rsi': rsi, 'width': width}
-    except: return None
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs)).iloc[-1]
 
-# --- 6. حلقة التداول الرئيسية ---
-def run_trading_logic():
-    global CURRENT_TOTAL_BALANCE, stats
-    send_telegram("🦾 *تم تشغيل القناص v5.3 الاحترافي*\nنطاق البحث: `200 عملة متوسطة`\nالهدف: `5% يومياً تراكمي`")
+        # --- شروط الاقتناص الاحترافية ---
+        # 1. السعر في حالة ضغط (أقل من متوسط ضغط آخر 50 شمعة)
+        is_squeezed = df['width'].iloc[-1] < df['width'].rolling(50).mean().iloc[-1] * 0.95
+        # 2. انفجار سيولة مفاجئ (أكبر من ضعف المتوسط القريب)
+        is_vol_breakout = current_vol > (recent_vol_avg * 2)
+        # 3. زخم صاعد صحي (بين 50 و 68) لضمان بداية الحركة
+        is_momentum_good = 50 < rsi < 68
+
+        if is_squeezed and is_vol_breakout and is_momentum_good:
+            return {'price': df['c'].iloc[-1], 'rsi': rsi, 'ready': True}
+    except: pass
+    return {'ready': False}
+
+# --- 4. المحرك الرئيسي لإدارة المحفظة ---
+def main_engine():
+    global last_report_1h, last_radar_scan
+    send_telegram("🦾 *تم تشغيل القناص المطور v8.2*\n- النظام: `20 صفقة × 25$`\n- فلاتر: `Squeeze + Vol x2 + RSI`\n- الرادار: `تحديث كل 15 دقيقة`")
 
     while True:
         try:
             now = datetime.now()
-            
-            # أ. نظام التقارير اليومية (كل 24 ساعة)
-            last_report_dt = datetime.fromisoformat(stats['last_report_date'])
-            if now >= last_report_dt + timedelta(days=1):
-                win_rate = (stats['wins'] / (stats['wins'] + stats['losses']) * 100) if (stats['wins'] + stats['losses']) > 0 else 0
-                report_msg = (f"📊 *تقرير الأداء (24 ساعة)*\n\n"
-                              f"💰 الرصيد الحالي: `{CURRENT_TOTAL_BALANCE:.2f}$`\n"
-                              f"✅ صفقات ناجحة: `{stats['wins']}`\n"
-                              f"❌ صفقات خاسرة: `{stats['losses']}`\n"
-                              f"📈 نسبة النجاح: `{win_rate:.1f}%`\n"
-                              f"💵 ربح اليوم الصافي: `{stats['total_pnl']:+.2f}$`\n"
-                              f"🚀 الحالة: `في تقدم نحو الهدف`")
-                send_telegram(report_msg)
-                stats.update({'wins': 0, 'losses': 0, 'total_pnl': 0, 'last_report_date': now.isoformat()})
-                save_state(active_trades, CURRENT_TOTAL_BALANCE, stats)
 
-            # ب. مراقبة وإدارة الصفقات المفتوحة
-            if active_trades:
-                tickers = exchange.fetch_tickers([t['symbol'] for t in active_trades])
-                for t in active_trades[:]:
-                    p_now = tickers[t['symbol']]['last']
-                    if p_now > t['highest_price']: t['highest_price'] = p_now
+            # أ. مراقبة وإغلاق الصفقات (الهدف أو الوقف)
+            for symbol in list(active_trades.keys()):
+                try:
+                    curr_p = exchange.fetch_ticker(symbol)['last']
+                    data = active_trades[symbol]
                     
-                    # تأمين الصفقة عند ربح 2%
-                    if not t['break_even'] and p_now >= t['entry_price'] * 1.02:
-                        t['stop'] = t['entry_price']
-                        t['break_even'] = True
-                        send_telegram(f"🛡️ *تأمين:* `{t['symbol']}` (رفع الوقف لنقطة الدخول)")
-
-                    if p_now >= t['target_trigger']: t['trailing_active'] = True
-
-                    # قرار الإغلاق (تتبع أو وقف خسارة)
-                    close_cond = (t['trailing_active'] and p_now <= t['highest_price'] * (1-TRAILING_CALLBACK)) or (p_now <= t['stop'])
-                    
-                    if close_cond:
-                        pnl = (p_now / t['entry_price']) - 1
-                        profit_val = t['cost'] * pnl
-                        CURRENT_TOTAL_BALANCE += profit_val
+                    # التحقق من جني الأرباح (3%) أو وقف الخسارة (3%)
+                    if curr_p >= data['tp'] or curr_p <= data['sl']:
+                        pnl = (curr_p - data['entry']) / data['entry']
+                        duration = str(now - data['start']).split('.')[0] # حساب المدة
+                        icon = "✅ ربح" if pnl > 0 else "🛑 خسارة"
                         
-                        if profit_val > 0: stats['wins'] += 1
-                        else: stats['losses'] += 1
-                        stats['total_pnl'] += profit_val
+                        msg = (f"{icon} *إغلاق صفقة:* `{symbol}`\n"
+                               f"📊 النتيجة: `{pnl*100:+.2f}%`\n"
+                               f"⏱️ مدة الصفقة: `{duration}`\n"
+                               f"📈 سعر الخروج: `{curr_p:.4f}`")
+                        send_telegram(msg)
                         
-                        active_trades.remove(t)
-                        save_state(active_trades, CURRENT_TOTAL_BALANCE, stats)
-                        
-                        icon = "✅" if profit_val > 0 else "🛑"
-                        send_telegram(f"{icon} *إغلاق صفقة:* `{t['symbol']}`\nالربح: `{pnl*100:+.2f}%`\nالرصيد: `{CURRENT_TOTAL_BALANCE:.2f}$`")
+                        daily_closed_trades.append({'symbol': symbol, 'pnl': pnl, 'duration': duration})
+                        del active_trades[symbol]
+                except: continue
 
-            # ج. البحث عن فرص (200 عملة)
+            # ب. الدخول التلقائي في صفقات جديدة (حتى 20 صفقة)
             if len(active_trades) < MAX_TRADES:
                 all_tickers = exchange.fetch_tickers()
-                # فلترة العملات (السيولة بين 15M و 500M) والترتيب حسب القوة
-                candidates = sorted([{'s': s, 'v': d['quoteVolume'], 'c': d['percentage']} 
-                                    for s, d in all_tickers.items() 
-                                    if '/USDT' in s and MIN_VOL < d['quoteVolume'] < MAX_VOL], 
-                                    key=lambda x: abs(x['c']), reverse=True)[:200]
+                symbols_to_scan = [s for s, d in all_tickers.items() 
+                                   if '/USDT' in s and VOL_MIN < d['quoteVolume'] < VOL_MAX][:300]
                 
-                for item in candidates:
-                    symbol = item['s']
-                    if symbol in [t['symbol'] for t in active_trades]: continue
+                for s in symbols_to_scan:
                     if len(active_trades) >= MAX_TRADES: break
+                    if s in active_trades: continue
                     
-                    time.sleep(0.1) # سرعة فحص عالية
-                    data = get_analysis(symbol)
-                    
-                    if data and data['price'] <= data['lower'] and data['width'] >= MIN_WIDTH and data['rsi'] <= 35:
-                        entry_amt = CURRENT_TOTAL_BALANCE * PERCENT_PER_TRADE
-                        sl_price = data['price'] * 0.965  # وقف 3.5%
-                        tp_trigger = data['upper']      # الهدف المبدئي
+                    sig = analyze_signal_pro(s)
+                    if sig and sig['ready']:
+                        entry_p = sig['price']
+                        tp_val = entry_p * (1 + TAKE_PROFIT_PCT)
+                        sl_val = entry_p * (1 - STOP_LOSS_PCT)
                         
-                        active_trades.append({
-                            'symbol': symbol, 'entry_price': data['price'], 'cost': entry_amt,
-                            'target_trigger': tp_trigger, 'highest_price': data['price'],
-                            'stop': sl_price, 'trailing_active': False, 
-                            'break_even': False, 'open_time': now
-                        })
-                        save_state(active_trades, CURRENT_TOTAL_BALANCE, stats)
+                        active_trades[s] = {
+                            'entry': entry_p, 'tp': tp_val, 'sl': sl_val, 'start': now
+                        }
                         
                         # إشعار الدخول التفصيلي
-                        entry_msg = (f"🎯 *فتح صفقة جديدة*\n\n"
-                                     f"💎 العملة: `{symbol}`\n"
-                                     f"💰 سعر الدخول: `{data['price']:.4f}`\n"
-                                     f"💵 قيمة الصفقة: `{entry_amt:.1f}$`\n"
-                                     f"🛑 وقف الخسارة: `{sl_price:.4f}`\n"
-                                     f"🎯 جني الأرباح (مبدئي): `{tp_trigger:.4f}`\n\n"
-                                     f"📊 تذبذب القناة: `{data['width']*100:.1f}%`")
+                        entry_msg = (f"🚀 *فتح صفقة جديدة*\n\n"
+                                     f"💎 العملة: `{s}`\n"
+                                     f"💰 سعر الدخول: `{entry_p:.4f}`\n"
+                                     f"⏰ وقت الدخول: `{now.strftime('%H:%M:%S')}`\n"
+                                     f"🎯 الهدف (3%): `{tp_val:.4f}`\n"
+                                     f"🛑 الوقف (3%): `{sl_val:.4f}`\n"
+                                     f"📈 مؤشر RSI: `{sig['rsi']:.1f}`")
                         send_telegram(entry_msg)
+                        time.sleep(1)
 
-            # د. توقيت الفحص
-            wait = 10 if any(t['trailing_active'] for t in active_trades) else 45
-            time.sleep(wait)
+            # ج. رادار الـ 15 دقيقة (قائمة أفضل 20 عملة مرشحة)
+            if now >= last_radar_scan + timedelta(minutes=15):
+                all_tickers = exchange.fetch_tickers()
+                potential = [s for s, d in all_tickers.items() if '/USDT' in s and VOL_MIN < d['quoteVolume'] < VOL_MAX][:300]
+                
+                radar_results = []
+                for s in potential:
+                    res = analyze_signal_pro(s)
+                    if res and res['ready']:
+                        radar_results.append(f"- `{s}` (RSI: {res['rsi']:.1f})")
+                
+                if radar_results:
+                    send_telegram(f"🔍 *رادار الـ 15 دقيقة (أفضل الفرص):*\n" + "\n".join(radar_results[:20]))
+                last_radar_scan = now
+
+            # د. تقرير الساعة الشامل (المفتوحة والمغلقة)
+            if now >= last_report_1h + timedelta(hours=1):
+                report = f"📊 *تقرير الساعة ({now.strftime('%H:%M')})*\n\n"
+                report += "*📂 صفقات مفتوحة حالياً:*\n"
+                for s, d in active_trades.items():
+                    curr_p = exchange.fetch_ticker(s)['last']
+                    cur_pnl = (curr_p - d['entry']) / d['entry'] * 100
+                    report += f"- `{s}`: `{cur_pnl:+.2f}%`\n"
+                if not active_trades: report += "لا يوجد\n"
+                
+                report += "\n*📜 سجل الإغلاق اليومي:*\n"
+                for t in daily_closed_trades:
+                    report += f"- `{t['symbol']}` ({t['pnl']*100:+.2f}%) | `{t['duration']}`\n"
+                if not daily_closed_trades: report += "لا يوجد"
+                
+                send_telegram(report)
+                last_report_1h = now
+
+            time.sleep(60) # تحديث الحالة كل دقيقة
         except Exception as e:
-            time.sleep(20)
+            time.sleep(30)
 
+# --- 5. تشغيل السيرفر والمنطق ---
 if __name__ == "__main__":
-    # تشغيل الخادم والمنطق
+    app = Flask('')
+    @app.route('/')
+    def h(): return f"Sniper v8.2 Live | Trades: {len(active_trades)}"
+    
     Thread(target=lambda: app.run(host='0.0.0.0', port=10000)).start()
-    run_trading_logic()
+    main_engine()
