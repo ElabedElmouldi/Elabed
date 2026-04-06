@@ -19,12 +19,13 @@ exchange = ccxt.binance({
     'options': {'defaultType': 'spot'}
 })
 
-# --- إعدادات المحفظة والتتبع ---
-MAX_TRADES = 20            # 20 صفقة كحد أقصى
-TRADE_AMOUNT_USD = 10.0    # 10 دولار لكل صفقة
-SCAN_INTERVAL = 300        # 5 دقائق
-ACTIVATION_PROFIT = 0.03   # تنشيط التتبع عند 3%
-TRAILING_GAP = 0.015       # فارق تتبع 1.5%
+# --- إعدادات المحفظة والتتبع (تعديلاتك الجديدة) ---
+MAX_TRADES = 20            
+TRADE_AMOUNT_USD = 10.0    
+SCAN_INTERVAL = 300        
+STOP_LOSS_PCT = 0.02       # ✅ وقف خسارة عند -2%
+ACTIVATION_PROFIT = 0.04   # ✅ تنشيط التتبع عند +4%
+TRAILING_GAP = 0.02        # ✅ فارق تتبع 2%
 
 active_trades = {}
 STABLE_COINS = ['USDC', 'FDUSD', 'TUSD', 'BUSD', 'DAI', 'EUR', 'GBP', 'PAXG', 'AEUR', 'USDP', 'USDT']
@@ -34,8 +35,7 @@ def send_telegram(message):
         try:
             url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
             requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=10)
-        except:
-            pass
+        except: pass
 
 # --- 2. محرك الفلترة (نظام الـ 20 شرطاً) ---
 def get_breakout_score(symbol):
@@ -45,11 +45,10 @@ def get_breakout_score(symbol):
         cp = df['c'].iloc[-1]
         score = 0
         
-        # المتوسطات والسيولة
         ema20 = df['c'].ewm(span=20).mean().iloc[-1]
         avg_v = df['v'].tail(20).mean()
         
-        # تطبيق شروط الانفجار (Score out of 20)
+        # شروط الانفجار
         if cp > ema20: score += 2
         if df['v'].iloc[-1] > avg_v * 2: score += 5
         if cp > df['h'].iloc[-2]: score += 3
@@ -58,10 +57,9 @@ def get_breakout_score(symbol):
         if ((cp - df['o'].iloc[-1])/df['o'].iloc[-1]) > 0.006: score += 5
         
         return score, cp
-    except:
-        return 0, 0  # هنا تم إصلاح خطأ SyntaxError بإضافة الـ except
+    except: return 0, 0
 
-# --- 3. خيط مراقبة الصفقات المفتوحة ---
+# --- 3. خيط المراقبة (تتبع 2% بعد ربح 4% ووقف -2%) ---
 def monitor_thread():
     while True:
         try:
@@ -76,84 +74,70 @@ def monitor_thread():
                 
                 highest = active_trades[s]['highest_price']
                 gain = (cp - trade['entry']) / trade['entry']
-                drop = (highest - cp) / highest
+                drop_from_peak = (highest - cp) / highest
                 
                 exit_now = False
                 reason = ""
 
-                # منطق التتبع: 1.5% من القمة بعد وصول 3% ربح
-                if gain >= ACTIVATION_PROFIT and drop >= TRAILING_GAP:
+                # منطق الخروج
+                if gain >= ACTIVATION_PROFIT and drop_from_peak >= TRAILING_GAP:
                     exit_now = True
-                    reason = "TRAILING TAKE PROFIT"
-                elif gain <= -0.04: # وقف خسارة ثابت 4%
+                    reason = f"TRAILING TP (Peak: {gain*100:.2f}%)"
+                elif gain <= -STOP_LOSS_PCT:
                     exit_now = True
-                    reason = "STOP LOSS"
+                    reason = "STOP LOSS (-2%)"
 
                 if exit_now:
-                    pnl_pct = gain * 100
-                    send_telegram(f"🏁 *إغلاق صفقة:* `{s}`\nالسبب: `{reason}`\nالنتيجة: `{pnl_pct:+.2f}%` ")
+                    pnl = gain * 100
+                    send_telegram(f"🏁 *إغلاق صفقة:* `{s}`\nالسبب: `{reason}`\nالنتيجة: `{pnl:+.2f}%` ")
                     del active_trades[s]
             
             time.sleep(10)
-        except:
-            time.sleep(5)
+        except: time.sleep(5)
 
-# --- 4. المحرك الرئيسي (المسح والترتيب كل 5 دقائق) ---
+# --- 4. المحرك الرئيسي (مسح 500 عملة ودخول تلقائي) ---
 def main_engine():
-    send_telegram(f"🚀 *تم تشغيل الرادار v75.0*\n🎯 النظام: 20 صفقة × 10$\n🛡️ تتبع: 1.5% بعد 3%")
+    send_telegram(f"🚀 *تفعيل Sniper v80.0*\n🛡️ وقف خسارة: -2% | تتبع: 2% (بعد 4% ربح)\n💰 المحفظة: 20 صفقة × 10$")
     last_scan = datetime.now() - timedelta(minutes=10)
 
     while True:
         try:
             now = datetime.now()
             if now >= last_scan + timedelta(seconds=SCAN_INTERVAL):
-                # 1. جلب العملات وترتيبها حسب السيولة
                 markets = exchange.fetch_markets()
                 all_usdt = [m['symbol'] for m in markets if m['quote'] == 'USDT' and m['spot'] and m['base'] not in STABLE_COINS]
                 tickers = exchange.fetch_tickers(all_usdt)
                 targets = sorted(all_usdt, key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)[20:520]
 
-                # 2. تحليل 500 عملة بالتوازي
                 with ThreadPoolExecutor(max_workers=15) as executor:
                     raw_results = list(executor.map(lambda s: {'symbol': s, 'data': get_breakout_score(s)}, targets))
-                    # تصفية العملات التي حققت سكور جيد (أعلى من 10)
-                    results = [r for r in raw_results if r['data'][0] >= 10]
+                    results = [r for r in raw_results if r['data'][0] >= 12]
 
-                # 3. ترتيب النتائج (الأعلى سكور أولاً)
                 results.sort(key=lambda x: x['data'][0], reverse=True)
                 
-                # 4. إرسال تقرير أفضل 5 عملات
                 if results:
-                    top_5_report = "🔝 *أفضل 5 عملات مكتشفة:*\n━━━━━━━━━━━━━━\n"
+                    # تقرير أفضل 5
+                    report = "🔝 *أفضل 5 عملات في المسح الحالي:*\n"
                     for i, res in enumerate(results[:5]):
-                        top_5_report += f"{i+1}. `{res['symbol']}` ➔ سكور: `{res['data'][0]}/20`\n"
-                    send_telegram(top_5_report)
+                        report += f"{i+1}. `{res['symbol']}` ➔ سكور: `{res['data'][0]}/20`\n"
+                    send_telegram(report)
 
-                    # 5. الدخول التلقائي في المركز الأول (بشرط عدم التكرار)
-                    best_match = results[0]
-                    symbol = best_match['symbol']
-                    
+                    # الدخول في المركز الأول (بدون تكرار)
+                    best = results[0]
+                    symbol = best['symbol']
                     if symbol not in active_trades and len(active_trades) < MAX_TRADES:
-                        # محاكاة دخول بـ 10 دولار
                         active_trades[symbol] = {
-                            'entry': best_match['data'][1],
-                            'highest_price': best_match['data'][1],
+                            'entry': best['data'][1],
+                            'highest_price': best['data'][1],
                             'time': now.strftime('%H:%M:%S')
                         }
-                        send_telegram(f"🔔 *دخول تلقائي (المركز 1):* `{symbol}`\n💰 القيمة: `10$`\n📊 السكور: `{best_match['data'][0]}`")
+                        send_telegram(f"🔔 *دخول تلقائي:* `{symbol}`\n💵 القيمة: `10$`\n📊 السكور: `{best['data'][0]}`")
                 
                 last_scan = now
-            
             time.sleep(30)
-        except:
-            time.sleep(10)
+        except: time.sleep(10)
 
 if __name__ == "__main__":
-    # تشغيل سيرفر Flask وهمي للبقاء حياً على الاستضافة
-    app = Flask('')
-    @app.route('/')
-    def home(): return "Bot is Running!"
-    
-    Thread(target=lambda: app.run(host='0.0.0.0', port=5000)).start()
+    app = Flask(''); Thread(target=lambda: app.run(host='0.0.0.0', port=5000)).start()
     Thread(target=monitor_thread).start()
     main_engine()
