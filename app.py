@@ -19,8 +19,8 @@ def send_telegram(message):
 
 # --- 2. الإعدادات المالية والتقنية ---
 MAX_TRADES = 10           # أقصى عدد صفقات متزامنة
-ACTIVATION_PROFIT = 0.05   # تفعيل التتبع بعد ربح 5%
-TRAILING_GAP = 0.02        # مسافة التتبع (2%)
+ACTIVATION_PROFIT = 0.03  # تفعيل التتبع بعد ربح 5%
+TRAILING_GAP = 0.015      # مسافة التتبع (2%)
 STOP_LOSS_PCT = 0.04       # وقف خسارة ثابت 4%
 
 exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
