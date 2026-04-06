@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "2107567005"]
 DATA_FILE = "bot_data.json"
-APP_URL = "https://your-app-name.onrender.com" # استبدله برابط Render الخاص بك
+APP_URL = "https://your-app-name.onrender.com" # استبدله برابط السيرفر الخاص بك
 
 exchange = ccxt.binance({
     'apiKey': os.environ.get('BINANCE_API_KEY', ''),
@@ -26,12 +26,12 @@ exchange = ccxt.binance({
 MAX_TRADES = 10
 TRADE_AMOUNT_USD = 100.0
 SCAN_INTERVAL = 300
-STOP_LOSS_PCT = 0.02       # -2%
-ACTIVATION_PROFIT = 0.04   # +4%
-TRAILING_GAP = 0.02        # 2%
+STOP_LOSS_PCT = 0.02       
+ACTIVATION_PROFIT = 0.04   
+TRAILING_GAP = 0.02        
 STABLE_COINS = ['USDC', 'FDUSD', 'TUSD', 'BUSD', 'DAI', 'EUR', 'GBP', 'PAXG', 'AEUR', 'USDP', 'USDT']
 
-# --- 2. إدارة البيانات (حفظ واستعادة متقدمة) ---
+# --- 2. إدارة البيانات ---
 active_trades = {}
 wallet_balance = 1000.0
 daily_start_balance = 1000.0
@@ -47,7 +47,8 @@ def save_data():
         }
         with open(DATA_FILE, 'w') as f:
             json.dump(data, f)
-    except Exception as e: print(f"Save Error: {e}")
+    except Exception as e:
+        print(f"Save Error: {e}")
 
 def load_data():
     global wallet_balance, active_trades, daily_start_balance, last_reset_date
@@ -59,29 +60,32 @@ def load_data():
                 active_trades = data.get('active_trades', {})
                 daily_start_balance = data.get('daily_start_balance', wallet_balance)
                 last_reset_date = data.get('last_reset_date', str(datetime.now().date()))
-        except: pass
+        except Exception as e:
+            print(f"Load Error: {e}")
 
 load_data()
 
 def send_telegram(msg):
     for cid in FRIENDS_IDS:
-        try: requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
+        try:
+            requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
                            json={"chat_id": cid, "text": msg, "parse_mode": "Markdown"}, timeout=10)
-        except: pass
+        except:
+            pass
 
-# --- 3. فلاتر الأمان (BTC & Daily Limits) ---
+# --- 3. فلاتر الأمان ---
 def is_btc_safe():
     try:
         btc_bars = exchange.fetch_ohlcv('BTC/USDT', timeframe='1h', limit=2)
         change = (btc_bars[-1][4] - btc_bars[-2][4]) / btc_bars[-2][4]
         return change > -0.01
-    except: return True
+    except:
+        return True
 
 def check_daily_limits():
     global daily_start_balance, last_reset_date, wallet_balance
     now_date = str(datetime.now().date())
     
-    # إعادة ضبط اليوم
     if now_date != last_reset_date:
         daily_start_balance = wallet_balance
         last_reset_date = now_date
@@ -89,12 +93,13 @@ def check_daily_limits():
         send_telegram(f"🌅 *يوم جديد:* تم تصفير الأهداف.\n💰 رصيد البداية: `{daily_start_balance:.2f}$` ")
 
     pnl_pct = (wallet_balance - daily_start_balance) / daily_start_balance
-    
-    if pnl_pct >= 0.10: return False, "✅ تم بلوغ هدف الربح اليومي (+10%)"
-    if pnl_pct <= -0.03: return False, "🛑 تم بلوغ حد الخسارة اليومي (-3%)"
+    if pnl_pct >= 0.10:
+        return False, "✅ تم بلوغ هدف الربح اليومي (+10%)"
+    if pnl_pct <= -0.03:
+        return False, "🛑 تم بلوغ حد الخسارة اليومي (-3%)"
     return True, ""
 
-# --- 4. محرك التحليل الفني (20 شرطاً) ---
+# --- 4. محرك التحليل الفني ---
 def get_breakout_score(symbol):
     try:
         bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=60)
@@ -111,15 +116,17 @@ def get_breakout_score(symbol):
         if df['v'].iloc[-1] > df['v'].iloc[-2]: score += 3
         if ((cp - df['o'].iloc[-1])/df['o'].iloc[-1]) > 0.006: score += 5
         return score, cp
-    except: return 0, 0
+    except:
+        return 0, 0
 
-# --- 5. خيط المراقبة اللحظي (كل 10 ثواني) ---
+# --- 5. خيط المراقبة اللحظي ---
 def monitor_thread():
     global wallet_balance
     while True:
         try:
             for s in list(active_trades.keys()):
-                ticker = exchange.fetch_ticker(s); cp = ticker['last']
+                ticker = exchange.fetch_ticker(s)
+                cp = ticker['last']
                 trade = active_trades[s]
                 
                 if cp > trade.get('highest_price', 0):
@@ -134,6 +141,19 @@ def monitor_thread():
                 drop = (highest - cp) / highest
                 
                 exit_now = False
+                res_reason = ""
                 if trade.get('tr_act', False) and drop >= TRAILING_GAP:
-                    exit_now = True; res = "تتبع الربح 🎯"
-                elif not trade.get('tr_act', False) and gain <= -STOP
+                    exit_now = True
+                    res_reason = "تتبع الربح 🎯"
+                elif not trade.get('tr_act', False) and gain <= -STOP_LOSS_PCT:
+                    exit_now = True
+                    res_reason = "وقف الخسارة 🛑"
+
+                if exit_now:
+                    entry_dt = datetime.strptime(trade['entry_time'], '%Y-%m-%d %H:%M:%S')
+                    dur = datetime.now() - entry_dt
+                    pnl_usd = TRADE_AMOUNT_USD * gain
+                    wallet_balance += pnl_usd
+                    
+                    msg = (f"🏁 *تقرير إغلاق صفقة*\n━━━━━━━━━━━━━━\n"
+                           f"🪙 *
