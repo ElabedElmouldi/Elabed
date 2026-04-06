@@ -2,30 +2,31 @@ import ccxt
 import pandas as pd
 import time
 from datetime import datetime, timedelta
-from flask import Flask, request
+from flask import Flask
 from threading import Thread
 import requests
 import os
 from concurrent.futures import ThreadPoolExecutor
 
-# --- 1. الإعدادات والروابط ---
+# --- 1. الإعدادات ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "2107567005"]
-WEB_URL = "https://your-app-name.onrender.com" 
 
-# الإعدادات المالية (السكالبينج السريع)
-MAX_TRADES = 10
-TRADE_VALUE_USD = 100
-ACTIVATION_PROFIT = 0.03  # 3%
-TRAILING_GAP = 0.01       # 1%
-STOP_LOSS_PCT = 0.035     # 3.5%
+# إعداد المنصة (تأكد من وضع API Key و Secret في Render لاحقاً)
+exchange = ccxt.binance({
+    'enableRateLimit': True, 
+    'options': {'defaultType': 'spot'}
+})
 
-exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
 active_trades = {}    
 blacklist_coins = {} 
-START_TIME = datetime.now()
+leaderboard_tracker = {"symbol": None, "count": 0}
 
-# --- 2. وظائف التلجرام والتحليل ---
+# إعدادات الاستراتيجية
+MAX_TRADES = 10
+ACTIVATION_PROFIT = 0.03 
+TRAILING_GAP = 0.01      
+STOP_LOSS_PCT = 0.035    
 
 def send_telegram(message):
     for chat_id in FRIENDS_IDS:
@@ -34,105 +35,128 @@ def send_telegram(message):
             requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=10)
         except: pass
 
-def analyze_v20_fast(symbol):
+def get_wallet_balance():
+    """جلب رصيد USDT المتاح والمجموع الكلي للمحفظة"""
     try:
-        bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=30)
-        df = pd.DataFrame(bars, columns=['t','o','h','l','c','v'])
-        last_change = ((df['c'].iloc[-1] - df['o'].iloc[-1]) / df['o'].iloc[-1]) * 100
-        if last_change > 7.0: return 0
-        
-        score = 0
-        if df['v'].iloc[-1] > df['v'].iloc[-10:-1].mean() * 2.5: score += 10
-        if df['c'].iloc[-1] > df['c'].ewm(span=20).mean().iloc[-1]: score += 10
-        return score
-    except: return 0
+        balance = exchange.fetch_balance()
+        total_usdt = balance['total'].get('USDT', 0)
+        free_usdt = balance['free'].get('USDT', 0)
+        return total_usdt, free_usdt
+    except:
+        return 0, 0
 
-# --- 3. المحرك الرئيسي (المسح + الإرسال التلقائي للأوائل) ---
-
-def main_engine():
-    global blacklist_coins
-    send_telegram("🚀 *Sniper v22.0 Activated*\n📊 سأرسل قائمة أفضل 10 عملات تلقائياً بعد كل مسح.")
-    
-    while True:
-        try:
-            now = datetime.now()
-            blacklist_coins = {s: t for s, t in blacklist_coins.items() if now < t}
-
-            # جلب البيانات الأساسية للمسح
-            tickers = exchange.fetch_tickers()
-            targets = sorted([s for s in tickers.keys() if '/USDT' in s], 
-                            key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:900]
-            
-            candidates = []
-
-            # فحص متوازي لـ 900 عملة
-            def check_logic(s):
-                score = analyze_v20_fast(s)
-                if score >= 10: # نقبل من 10 نقاط لعرضها في القائمة
-                    return {'symbol': s, 'score': score, 'price': tickers[s]['last'], 'change': tickers[s]['percentage']}
-                return None
-
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                results = list(executor.map(check_logic, targets))
-                candidates = [r for r in results if r]
-
-            if candidates:
-                # ترتيب المرشحين حسب النقاط ثم الصعود الأقوى
-                candidates.sort(key=lambda x: (x['score'], x['change']), reverse=True)
-                top_10 = candidates[:10]
-
-                # 📝 بناء رسالة قائمة أفضل 10 (تُرسل تلقائياً)
-                list_msg = f"📋 *قائمة النخبة (أفضل 10 عملات الآن)*\n"
-                list_msg += f"⏰ الوقت: `{now.strftime('%H:%M:%S')}`\n"
-                list_msg += "━━━━━━━━━━━━━━\n"
-                for i, c in enumerate(top_10, 1):
-                    emoji = "🔥" if i <= 3 else "✅"
-                    list_msg += f"{emoji} `{c['symbol']}` | النقاط: `{c['score']}/20` | `{c['change']:+.2f}%` \n"
-                list_msg += "━━━━━━━━━━━━━━\n"
-                list_msg += "_سيتم الدخول تلقائياً في المركز الأول إذا توفرت السيولة._"
-                
-                send_telegram(list_msg)
-
-                # 🎯 تنفيذ الدخول الفعلي في "المركز الأول" فقط
-                best = top_10[0]
-                if len(active_trades) < MAX_TRADES and best['symbol'] not in active_trades and best['symbol'] not in blacklist_coins and best['score'] >= 15:
-                    s, p = best['symbol'], best['price']
-                    active_trades[s] = {'entry': p, 'highest_price': p, 'time': now.strftime('%H:%M:%S')}
-                    
-                    sl = p * (1 - STOP_LOSS_PCT)
-                    tp = p * (1 + ACTIVATION_PROFIT)
-                    
-                    entry_msg = (
-                        f"🔔 *دخول صفقة (المركز الأول)*\n"
-                        f"🪙 العملة: `{s}`\n💰 السعر: `{p}`\n🛑 الوقف: `{sl:.8f}` | 🎯 الهدف: `{tp:.8f}`"
-                    )
-                    send_telegram(entry_msg)
-
-            time.sleep(600) # مسح شامل وإرسال تقرير كل 10 دقائق
-        except: time.sleep(10)
-
-# --- 4. بقية الكود (Monitor & Flask) ---
-# (نفس وظائف monitor_trades و keep_alive السابقة)
+# --- 2. مراقبة الصفقات وإرسال قيمة المحفظة عند الإغلاق ---
 
 def monitor_trades():
     while True:
         try:
             for s in list(active_trades.keys()):
-                ticker = exchange.fetch_ticker(s); cp = ticker['last']; trade = active_trades[s]
-                if cp > trade['highest_price']: active_trades[s]['highest_price'] = cp
+                ticker = exchange.fetch_ticker(s)
+                cp = ticker['last']
+                trade = active_trades[s]
+                
+                if cp > trade.get('highest_price', 0):
+                    active_trades[s]['highest_price'] = cp
+                
                 gain = (cp - trade['entry']) / trade['entry']
-                drop = (trade['highest_price'] - cp) / trade['highest_price']
-                if gain <= -STOP_LOSS_PCT or (gain >= ACTIVATION_PROFIT and drop >= TRAILING_GAP):
+                drop_from_peak = (trade['highest_price'] - cp) / trade['highest_price']
+                
+                # إشعار تفعيل التتبع
+                if gain >= ACTIVATION_PROFIT and not trade.get('trailing_notified', False):
+                    send_telegram(f"🎯 *تفعيل التتبع:* `{s}` الربح الحالي: `+{gain*100:.2f}%` 🛡️")
+                    active_trades[s]['trailing_notified'] = True
+
+                exit_now = False
+                reason = ""
+                if gain <= -STOP_LOSS_PCT: exit_now = True; reason = "🛑 SL"
+                elif trade.get('trailing_notified') and drop_from_peak >= TRAILING_GAP:
+                    exit_now = True; reason = "💰 TP"
+
+                if exit_now:
                     pnl = gain * 100
-                    send_telegram(f"🏁 *إغلاق:* `{s}` الربح: `{pnl:+.2f}%`")
+                    # جلب الرصيد المحدث فور الإغلاق
+                    total_bal, free_bal = get_wallet_balance()
+                    
+                    final_msg = (
+                        f"🏁 *إغلاق صفقة ({reason})*\n"
+                        f"🪙 العملة: `{s}`\n"
+                        f"📊 النتيجة: `{pnl:+.2f}%` \n"
+                        f"━━━━━━━━━━━━━━\n"
+                        f"💰 *حالة المحفظة الآن:*\n"
+                        f"💵 الإجمالي: `${total_bal:.2f}`\n"
+                        f"🔓 المتاح للتداول: `${free_bal:.2f}`"
+                    )
+                    send_telegram(final_msg)
                     blacklist_coins[s] = datetime.now() + timedelta(hours=1)
                     del active_trades[s]
-            time.sleep(10)
-        except: time.sleep(5)
+                    
+            time.sleep(15)
+        except: time.sleep(10)
 
+# --- 3. المحرك الرئيسي ---
+
+def main_engine():
+    global leaderboard_tracker, blacklist_coins
+    send_telegram("🚀 *Sniper v27.0 Online*\nنظام تقرير المحفظة عند الإغلاق مفعّل.")
+    
+    while True:
+        try:
+            now = datetime.now()
+            blacklist_coins = {s: t for s, t in blacklist_coins.items() if now < t}
+            
+            tickers = exchange.fetch_tickers()
+            all_symbols = [s for s in tickers.keys() if '/USDT' in s and 'USD' not in s.split('/')[0]]
+            targets = sorted(all_symbols, key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)[:900]
+            
+            candidates = []
+            def process_scan(s):
+                if s not in active_trades and s not in blacklist_coins:
+                    t = tickers[s]
+                    score = 0
+                    if t['quoteVolume'] > 2000000: score += 10
+                    if t['percentage'] > 2.0: score += 10
+                    if score >= 10:
+                        return {'symbol': s, 'score': score, 'price': t['last'], 'change': t['percentage']}
+                return None
+
+            with ThreadPoolExecutor(max_workers=15) as executor:
+                results = list(executor.map(process_scan, targets))
+                candidates = [r for r in results if r]
+
+            candidates.sort(key=lambda x: (x['score'], x['change']), reverse=True)
+            top_10 = candidates[:10]
+
+            if top_10:
+                current_winner = top_10[0]['symbol']
+                if current_winner == leaderboard_tracker["symbol"]:
+                    leaderboard_tracker["count"] += 1
+                else:
+                    leaderboard_tracker["symbol"] = current_winner
+                    leaderboard_tracker["count"] = 1
+
+            # تقرير المسح
+            report = f"📋 *تقرير المسح الدوري*\n🏆 المتصدر: `{leaderboard_tracker['symbol']}` ({leaderboard_tracker['count']}/3)\n"
+            report += "━━━━━━━━━━━━━━\n"
+            for i, c in enumerate(top_10, 1):
+                report += f"{'🥇' if i==1 else '🔹'} `{c['symbol']}` | `{c['change']:+.2f}%` \n"
+            send_telegram(report)
+
+            if leaderboard_tracker["count"] >= 3 and len(active_trades) < MAX_TRADES:
+                best = top_10[0]
+                active_trades[best['symbol']] = {
+                    'entry': best['price'], 'highest_price': best['price'], 
+                    'time': now.strftime('%H:%M:%S'), 'trailing_notified': False
+                }
+                send_telegram(f"🚀 *دخول:* `{best['symbol']}` بسعر `{best['price']}`")
+                leaderboard_tracker = {"symbol": None, "count": 0}
+
+            time.sleep(600)
+        except: time.sleep(30)
+
+# --- التشغيل ---
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Bot is Alive"
+def home(): return "Bot Online"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
