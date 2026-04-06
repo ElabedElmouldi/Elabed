@@ -44,56 +44,60 @@ def calculate_ema(series, span):
 
 def calculate_total_score(symbol):
     try:
+        # جلب البيانات لفريم 15 دقيقة
         bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=100)
         df = pd.DataFrame(bars, columns=['t', 'o', 'h', 'l', 'c', 'v'])
+        
         score = 0
         
-        # 1. RSI (5 نقاط)
+        # 1. نقاط RSI (حتى 5 نقاط)
         df['rsi'] = calculate_rsi(df['c'])
         rsi = df['rsi'].iloc[-1]
-        if 50 < rsi < 65: score += 5 
-        elif 65 <= rsi < 75: score += 3 
+        if 50 < rsi < 68: score += 5 
+        elif 68 <= rsi < 78: score += 2 
         
-        # 2. EMA (5 نقاط)
+        # 2. نقاط المتوسطات EMA (حتى 5 نقاط)
         df['ema20'] = calculate_ema(df['c'], 20)
         df['ema50'] = calculate_ema(df['c'], 50)
         if df['c'].iloc[-1] > df['ema20'].iloc[-1] > df['ema50'].iloc[-1]: score += 5
             
-        # 3. السيولة (5 نقاط)
+        # 3. نقاط انفجار السيولة (حتى 5 نقاط)
         avg_vol = df['v'].tail(20).mean()
-        if df['v'].iloc[-1] > avg_vol * 2.0: score += 5 # انفجار سيولة ضخم
-        elif df['v'].iloc[-1] > avg_vol * 1.3: score += 3 
+        if df['v'].iloc[-1] > avg_vol * 1.8: score += 5
             
-        # 4. الزخم (5 نقاط)
+        # 4. نقاط التغير السعري (حتى 5 نقاط)
         chg = ((df['c'].iloc[-1] - df['o'].iloc[-1]) / df['o'].iloc[-1]) * 100
-        if 2.0 < chg < 5.0: score += 5
-        elif 0.5 < chg <= 2.0: score += 2
+        if 1.5 < chg < 5.0: score += 5
             
         return score, df['c'].iloc[-1], chg
     except: return 0, 0, 0
 
-# --- 3. المحرك الرئيسي بنظام الدخول الفوري (Instant Entry) ---
+# --- 3. المحرك الرئيسي (مسح كامل أزواج USDT) ---
 
 def main_engine():
     global leaderboard_tracker, blacklist_coins
-    send_telegram("⚡ *نظام الدخول الفوري v33.0 مفعّل*\nرصد العملات الكاملة (20/20) والدخول اللحظي...")
+    send_telegram("🔍 *رادار بايننس الشامل v32.0*\nجاري فحص جميع أزواج USDT المتاحة...")
     
     while True:
         try:
             now = datetime.now()
             blacklist_coins = {s: t for s, t in blacklist_coins.items() if now < t}
             
+            # --- التعديل الجوهري: جلب كل العملات المتاحة مقابل USDT ---
             markets = exchange.fetch_markets()
             all_usdt_pairs = [m['symbol'] for m in markets if m['quote'] == 'USDT' and m['spot']]
+            
+            # جلب بيانات الـ Tickers لفلترة السيولة الضعيفة قبل التحليل العميق
             tickers = exchange.fetch_tickers(all_usdt_pairs)
             
             candidates = []
             def process_scan(s):
                 if s not in active_trades and s not in blacklist_coins:
                     ticker = tickers.get(s, {})
+                    # فلترة: حجم التداول > مليون دولار للتأكد من وجود سيولة حقيقية
                     if ticker.get('quoteVolume', 0) > 1000000:
                         score, price, chg = calculate_total_score(s)
-                        if score >= 10:
+                        if score >= 8: # عرض العملات التي تبدي أي إيجابية
                             return {'symbol': s, 'score': score, 'price': price, 'change': chg}
                 return None
 
@@ -101,51 +105,43 @@ def main_engine():
                 results = list(executor.map(process_scan, all_usdt_pairs))
                 candidates = [r for r in results if r]
 
+            # ترتيب حسب السكور الأعلى
             candidates.sort(key=lambda x: (x['score'], x['change']), reverse=True)
             top_10 = candidates[:10]
 
+            # منطق الصدارة الثلاثي
             if top_10:
-                best = top_10[0]
-                s = best['symbol']
-                score = best['score']
-
-                # --- منطق الدخول المرن الجديد ---
-                should_enter = False
-                entry_reason = ""
-
-                # 1. الدخول الفوري للعملة الكاملة
-                if score >= 20:
-                    should_enter = True
-                    entry_reason = "🔥 دخول فوري (سكور كامل 20/20)"
-                
-                # 2. الدخول بتأكيد الصدارة للعملات القوية
+                best_now = top_10[0]['symbol']
+                if best_now == leaderboard_tracker["symbol"]:
+                    leaderboard_tracker["count"] += 1
                 else:
-                    if s == leaderboard_tracker["symbol"]:
-                        leaderboard_tracker["count"] += 1
-                    else:
-                        leaderboard_tracker["symbol"] = s
-                        leaderboard_tracker["count"] = 1
-                    
-                    if leaderboard_tracker["count"] >= 3 and score >= 14:
-                        should_enter = True
-                        entry_reason = f"🏆 تأكيد صدارة (3 مرات) بسكور {score}"
+                    leaderboard_tracker["symbol"] = best_now
+                    leaderboard_tracker["count"] = 1
 
-                # تنفيذ الدخول
-                if should_enter and len(active_trades) < MAX_TRADES:
-                    active_trades[s] = {'entry': best['price'], 'highest_price': best['price'], 'time': now.strftime('%H:%M:%S'), 'trailing_notified': False}
-                    send_telegram(f"🚀 *تم فتح صفقة:*\n🪙 العملة: `{s}`\n📝 السبب: {entry_reason}")
-                    leaderboard_tracker = {"symbol": None, "count": 0}
-
-            # إرسال التقرير الدوري
-            report = f"📋 *تقرير الرادار الدوري*\n⏰ `{now.strftime('%H:%M:%S')}`\n━━━━━━━━━━━━━━\n"
+            # إرسال التقرير
+            report = f"📋 *تقرير نخبة بايننس (أزواج USDT)*\n⏰ `{now.strftime('%H:%M:%S')}`\n"
+            report += f"📑 تم فحص: `{len(all_usdt_pairs)}` زوجاً\n"
+            report += "━━━━━━━━━━━━━━\n"
             for i, c in enumerate(top_10, 1):
                 report += f"{'🥇' if i==1 else '🔹'} `{c['symbol']}` | سكور: *{c['score']}/20* | `{c['change']:+.2f}%` \n"
+            report += "━━━━━━━━━━━━━━\n"
+            report += f"🏆 المتصدر: `{leaderboard_tracker['symbol']}` ({leaderboard_tracker['count']}/3)"
             send_telegram(report)
 
-            time.sleep(600)
-        except: time.sleep(30)
+            # تنفيذ الدخول
+            if leaderboard_tracker["count"] >= 3 and len(active_trades) < MAX_TRADES:
+                best = top_10[0]
+                if best['score'] >= 14: # دخول عند سكور قوي فقط
+                    s, p = best['symbol'], best['price']
+                    active_trades[s] = {'entry': p, 'highest_price': p, 'time': now.strftime('%H:%M:%S'), 'trailing_notified': False}
+                    send_telegram(f"🚀 *دخول استراتيجي:* `{s}` بسكور `{best['score']}`.")
+                    leaderboard_tracker = {"symbol": None, "count": 0}
 
-# --- (monitor_trades و Flask كما في النسخ السابقة) ---
+            time.sleep(600)
+        except Exception as e:
+            time.sleep(30)
+
+# --- 4. مراقبة الصفقات و Flask ---
 
 def monitor_trades():
     while True:
@@ -162,7 +158,7 @@ def monitor_trades():
                 elif trade.get('trailing_notified') and drop >= TRAILING_GAP: exit_now = True; res = "💰 TP"
                 if exit_now:
                     bal = exchange.fetch_balance()['total'].get('USDT', 0)
-                    send_telegram(f"🏁 *إغلاق:* `{s}` | `{gain*100:+.2f}%` \n💰 الرصيد: `${bal:.2f}`")
+                    send_telegram(f"🏁 *إغلاق:* `{s}` | النتيجة: `{gain*100:+.2f}%` \n💰 الرصيد: `${bal:.2f}`")
                     blacklist_coins[s] = datetime.now() + timedelta(hours=1); del active_trades[s]
             time.sleep(15)
         except: time.sleep(10)
