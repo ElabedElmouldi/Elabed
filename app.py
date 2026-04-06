@@ -5,31 +5,10 @@ from datetime import datetime, timedelta
 from flask import Flask
 from threading import Thread
 import requests
-import os
-from concurrent.futures import ThreadPoolExecutor
 
-# --- 1. الإعدادات وإدارة المخاطر ---
+# --- 1. إعدادات التلجرام ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "2107567005"]
-
-exchange = ccxt.binance({
-    'apiKey': os.environ.get('BINANCE_API_KEY', ''),
-    'secret': os.environ.get('BINANCE_SECRET', ''),
-    'enableRateLimit': True,
-    'options': {'defaultType': 'spot'}
-})
-
-# الثوابت المالية (دخول بـ 100$ من أصل 1000$)
-TRADE_AMOUNT_USD = 100.0   
-MAX_TRADES = 10            
-ACTIVATION_PROFIT = 0.03   # التنشيط عند 3%
-TRAILING_GAP = 0.015       # فارق التتبع 1.5%
-STOP_LOSS_PCT = 0.035      # وقف خسارة 3.5%
-MONITOR_INTERVAL = 10      # فحص كل 10 ثوانٍ
-
-active_trades = {}    
-closed_today = []     
-STABLE_COINS = ['USDC', 'FDUSD', 'TUSD', 'BUSD', 'DAI', 'EUR', 'GBP', 'PAXG', 'AEUR', 'USDP', 'USDT']
 
 def send_telegram(message):
     for chat_id in FRIENDS_IDS:
@@ -38,120 +17,149 @@ def send_telegram(message):
             requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=10)
         except: pass
 
-# --- 2. محرك السكور الفني (نظام الـ 20 شرطاً) ---
-def calculate_advanced_score(symbol):
+# --- 2. الإعدادات المالية والتقنية ---
+MAX_TRADES = 10           # أقصى عدد صفقات متزامنة
+ACTIVATION_PROFIT = 0.05   # تفعيل التتبع بعد ربح 5%
+TRAILING_GAP = 0.02        # مسافة التتبع (2%)
+STOP_LOSS_PCT = 0.04       # وقف خسارة ثابت 4%
+
+exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
+active_trades = {}    # الصفقات القائمة
+closed_today = []     # سجل الصفقات المغلقة اليوم
+
+# --- 3. وظيفة تقارير الصفقات (المفتوحة والمغلقة) ---
+def send_combined_hourly_report():
+    now_str = datetime.now().strftime('%H:%M')
+    
+    # أولاً: تقرير الصفقات المفتوحة
+    open_report = f"📊 *تقرير الصفقات المفتوحة ({now_str})*\n━━━━━━━━━━━━━━\n"
+    if not active_trades:
+        open_report += "_لا توجد صفقات مفتوحة حالياً._\n"
+    else:
+        for symbol, data in active_trades.items():
+            try:
+                ticker = exchange.fetch_ticker(symbol)
+                cp = ticker['last']
+                pnl = ((cp - data['entry']) / data['entry']) * 100
+                emoji = "📈" if pnl >= 0 else "📉"
+                open_report += (
+                    f"🪙 *{symbol}*\n"
+                    f"📥 دخول: `{data['entry']}` | الحالي: `{cp}`\n"
+                    f"{emoji} النسبة: `{pnl:+.2f}%` | ⏰: `{data['time']}`\n"
+                    f"┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+                )
+            except: pass
+
+    # ثانياً: تقرير الصفقات المغلقة اليوم
+    closed_report = f"\n✅ *العمليات المنتهية اليوم*\n━━━━━━━━━━━━━━\n"
+    if not closed_today:
+        closed_report += "_لم يتم إغلاق أي صفقات اليوم بعد._\n"
+    else:
+        daily_total = 0
+        for trade in closed_today:
+            emoji = "💰" if trade['pnl'] > 0 else "🛑"
+            closed_report += (
+                f"{emoji} `{trade['symbol']}`: `{trade['pnl']:+.2f}%` "
+                f"({trade['time_in']} -> {trade['time_out']})\n"
+            )
+            daily_total += trade['pnl']
+        closed_report += f"━━━━━━━━━━━━━━\n📈 *صافي أداء اليوم:* `{daily_total:+.2f}%`"
+
+    send_telegram(open_report + closed_report)
+
+# --- 4. خوارزمية المسح والتحليل (v20) ---
+def analyze_market(symbol, ticker):
     try:
-        bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=60)
+        bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=40)
         df = pd.DataFrame(bars, columns=['t','o','h','l','c','v'])
-        cp = df['c'].iloc[-1]; score = 0
+        c = df['c']
+        ema20 = c.ewm(span=20).mean()
         
-        # المتوسطات والزخم
-        ema20 = df['c'].ewm(span=20).mean(); ema50 = df['c'].ewm(span=50).mean()
-        delta = df['c'].diff(); g = delta.where(delta > 0, 0).rolling(14).mean(); l = -delta.where(delta < 0, 0).rolling(14).mean()
-        rsi = 100 - (100 / (1 + (g / l))).iloc[-1]
-
-        # توزيع النقاط (الاتجاه، السيولة، الزخم)
-        if cp > ema20.iloc[-1]: score += 4
-        if ema20.iloc[-1] > ema50.iloc[-1]: score += 4
-        if 50 < rsi < 75: score += 4
-        if df['v'].iloc[-1] > df['v'].tail(15).mean() * 1.8: score += 5 # انفجار سيولة
-        if cp > df['o'].iloc[-1]: score += 3
+        score = 0
+        # معايير السيولة والزخم
+        if df['v'].iloc[-1] > df['v'].iloc[-20:-1].mean() * 2.5: score += 10
+        if c.iloc[-1] > ema20.iloc[-1] * 1.01: score += 10
         
-        return score, cp, ((cp - df['o'].iloc[-1]) / df['o'].iloc[-1]) * 100
-    except: return 0, 0, 0
+        return {'symbol': symbol, 'score': score, 'price': ticker['last']} if score >= 20 else None
+    except: return None
 
-# --- 3. مراقبة الصفقات اللحظية (تتبع 1.5% كل 10ث) ---
+# --- 5. خيط المراقبة اللحظية (تتبع السعر كل 10 ثوانٍ) ---
 def monitor_thread():
     while True:
         try:
+            # تصفير السجل عند منتصف الليل
             if datetime.now().hour == 0 and datetime.now().minute == 0 and datetime.now().second < 15:
-                global closed_today; closed_today = []
+                global closed_today
+                closed_today = []
 
-            for s in list(active_trades.keys()):
-                ticker = exchange.fetch_ticker(s); cp = ticker['last']; tr = active_trades[s]
-                if cp > tr.get('highest_price', 0): active_trades[s]['highest_price'] = cp
+            for symbol in list(active_trades.keys()):
+                ticker = exchange.fetch_ticker(symbol)
+                cp = ticker['last']
+                trade = active_trades[symbol]
                 
-                gain = (cp - tr['entry']) / tr['entry']
-                drop = (tr['highest_price'] - cp) / tr['highest_price']
+                # تحديث القمة
+                if cp > trade['highest_price']: active_trades[symbol]['highest_price'] = cp
                 
-                exit_now = False; reason = ""
-                if gain >= ACTIVATION_PROFIT and drop >= TRAILING_GAP:
-                    exit_now = True; reason = "TRAILING EXIT (1.5%)"
-                elif gain <= -STOP_LOSS_PCT:
-                    exit_now = True; reason = "STOP LOSS"
+                gain = (cp - trade['entry']) / trade['entry']
+                highest = active_trades[symbol]['highest_price']
+                drop = (highest - cp) / highest
+                
+                trigger_exit = False
+                reason = ""
 
-                if exit_now:
+                if gain <= -STOP_LOSS_PCT:
+                    trigger_exit = True; reason = "STOP LOSS"
+                elif gain >= ACTIVATION_PROFIT and drop >= TRAILING_GAP:
+                    trigger_exit = True; reason = "TRAILING TP"
+
+                if trigger_exit:
                     pnl_val = gain * 100
-                    closed_today.append({'symbol': s, 'pnl': pnl_val, 'time': datetime.now().strftime('%H:%M')})
-                    send_telegram(f"🏁 *إغلاق صفقة:* `{s}`\nالسبب: `{reason}`\nالنتيجة: `{pnl_val:+.2f}%` ")
-                    del active_trades[s]
-            time.sleep(MONITOR_INTERVAL)
+                    closed_today.append({
+                        'symbol': symbol, 'entry': trade['entry'], 'exit': cp,
+                        'time_in': trade['time'], 'time_out': datetime.now().strftime('%H:%M'),
+                        'pnl': pnl_val
+                    })
+                    send_telegram(f"🏁 *إغلاق صفقة ({reason}):* `{symbol}`\nالنتيجة: `{pnl_val:+.2f}%`")
+                    del active_trades[symbol]
+            time.sleep(10)
         except: time.sleep(5)
 
-# --- 4. التقارير الساعية ---
-def send_combined_report():
-    now_str = datetime.now().strftime('%H:%M')
-    report = f"📊 *تقرير الأداء ({now_str})*\n━━━━━━━━━━━━━━\n"
-    if not active_trades:
-        report += "_لا توجد صفقات حالية._\n"
-    else:
-        for s, d in active_trades.items():
-            try:
-                ticker = exchange.fetch_ticker(s); cp = ticker['last']
-                pnl = ((cp - d['entry']) / d['entry']) * 100
-                report += f"🪙 `{s}`: `{pnl:+.2f}%` | 📥 `{d['entry']}`\n"
-            except: pass
-    
-    if closed_today:
-        daily_pnl = sum(t['pnl'] for t in closed_today)
-        report += f"\n✅ *عمليات اليوم:* `{len(closed_today)}`\n📈 *صافي اليوم:* `{daily_pnl:+.2f}%`"
-    
-    send_telegram(report)
-
-# --- 5. المحرك الرئيسي (مسح 600 عملة) ---
+# --- 6. المحرك الرئيسي (مسح 900 عملة + تقرير ساعي) ---
 def main_engine():
-    send_telegram(f"🛡️ *تشغيل v53.0 (الرادار العملاق)*\n🔍 مسح 600 عملة USDT\n🎯 تتبع 1.5% بعد ربح 3%")
+    send_telegram("🚀 *تم تشغيل نظام Sniper v16.5*\n- مسح 900 عملة\n- تتبع 2%\n- تقارير ساعية شاملة")
+    last_scan = datetime.now() - timedelta(minutes=15)
     last_report = datetime.now()
-    
+
     while True:
         try:
             now = datetime.now()
+            
+            # 1. إرسال التقارير كل ساعة
             if now >= last_report + timedelta(hours=1):
-                send_combined_report()
+                send_combined_hourly_report()
                 last_report = now
 
-            send_telegram("🔍 *جاري فحص 600 عملة الآن...*")
-            markets = exchange.fetch_markets()
-            all_usdt = [m['symbol'] for m in markets if m['quote'] == 'USDT' and m['spot'] and m['base'] not in STABLE_COINS]
-            tickers = exchange.fetch_tickers(all_usdt)
-            # ترتيب حسب السيولة واختيار 600 عملة (تخطي أول 20 عملة كبرى)
-            targets = sorted(all_usdt, key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)[20:620]
-
-            # استخدام 12 خيط معالجة للسرعة مع 600 عملة
-            with ThreadPoolExecutor(max_workers=12) as exec:
-                def scan(s):
-                    if s not in active_trades:
-                        sc, pr, ch = calculate_advanced_score(s)
-                        return {'symbol': s, 'score': sc, 'price': pr} if sc >= 15 else None
-                    return None
-                results = [r for r in list(exec.map(scan, targets)) if r]
-
-            results.sort(key=lambda x: x['score'], reverse=True)
-            
-            if results and len(active_trades) < MAX_TRADES:
-                best = results[0]
-                if best['score'] >= 17: # الدخول فقط في أقوى الفرص
-                    active_trades[best['symbol']] = {
-                        'entry': best['price'], 
-                        'highest_price': best['price'],
-                        'time': now.strftime('%H:%M:%S')
-                    }
-                    send_telegram(f"🔔 *إشارة دخول:* `{best['symbol']}`\n💰 السعر: `{best['price']}`\n📊 السكور: `{best['score']}/20` \n🛡️ تتبع: 3% + 1.5%")
-
-            time.sleep(600) # مسح كل 10 دقائق
-        except: time.sleep(30)
+            # 2. المسح التوربيني لـ 900 عملة
+            if now >= last_scan + timedelta(minutes=10):
+                tickers = exchange.fetch_tickers()
+                all_symbols = [s for s in tickers.keys() if '/USDT' in s and 'USD' not in s.split('/')[0]]
+                targets = sorted(all_symbols, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:900]
+                
+                for s in targets:
+                    if len(active_trades) < MAX_TRADES and s not in active_trades:
+                        res = analyze_market(s, tickers[s])
+                        if res:
+                            p = res['price']
+                            active_trades[s] = {'entry': p, 'highest_price': p, 'time': now.strftime('%H:%M:%S')}
+                            send_telegram(f"🔔 *إشارة دخول:* `{s}`\nالسعر: `{p}`\nالهدف: تتبع `>5%` بمساحة `2%`")
+                    time.sleep(0.04)
+                last_scan = now
+            time.sleep(30)
+        except: time.sleep(10)
 
 if __name__ == "__main__":
+    # تشغيل سيرفر وهمي للحفاظ على العمل
     app = Flask(''); Thread(target=lambda: app.run(host='0.0.0.0', port=5000)).start()
+    # تشغيل خيوط المراقبة والمسح
     Thread(target=monitor_thread).start()
     main_engine()
