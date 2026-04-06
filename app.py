@@ -9,18 +9,17 @@ import os
 from fpdf import FPDF
 from concurrent.futures import ThreadPoolExecutor
 
-# --- 1. الإعدادات والروابط ---
+# --- 1. الإعدادات والروابط (Render) ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "2107567005"]
-# استبدل هذا بالرابط الذي سيعطيك إياه Render بعد الرفع
-WEB_URL = "https://your-app-name.onrender.com" 
+WEB_URL = "https://your-app-name.onrender.com" # ضع رابط رندر هنا بعد الرفع
 
-# الإعدادات المالية
+# الإعدادات المالية الجديدة (الاستراتيجية السريعة)
 MAX_TRADES = 10
 TRADE_VALUE_USD = 100
-ACTIVATION_PROFIT = 0.05 
-TRAILING_GAP = 0.02      
-STOP_LOSS_PCT = 0.04     
+ACTIVATION_PROFIT = 0.03  # تفعيل التتبع عند 3%
+TRAILING_GAP = 0.01       # فارق الملاحقة 1% (الخروج عند تراجع 1% من القمة)
+STOP_LOSS_PCT = 0.035     # وقف خسارة 3.5% (لحماية الأرباح)
 
 exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
 active_trades = {}    
@@ -28,30 +27,23 @@ closed_today = []
 blacklist_coins = {} 
 START_TIME = datetime.now()
 
-# --- 2. نظام Flask للبقاء مستيقظاً (Web Server) ---
+# --- 2. نظام Flask للبقاء مستيقظاً ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return f"Sniper v20.0 is Active. Running since: {START_TIME.strftime('%Y-%m-%d %H:%M:%S')}"
-
-@app.route('/health')
-def health():
-    return "OK", 200
+    return f"Sniper Scalper v21.0 is Live. Uptime: {str(datetime.now()-START_TIME).split('.')[0]}"
 
 def keep_alive():
-    """ دالة النبض لإبقاء السيرفر مستيقظاً """
-    time.sleep(30) # انتظار بدء التشغيل
+    time.sleep(60)
     while True:
         try:
-            # إرسال طلب لنفسه كل 10 دقائق
             requests.get(WEB_URL, timeout=10)
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Render Heartbeat Sent.")
-        except:
-            print("Heartbeat failed, retrying later...")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Heartbeat sent.")
+        except: pass
         time.sleep(600)
 
-# --- 3. وظائف التلجرام والتحليل v20 ---
+# --- 3. وظائف التلجرام والتحليل ---
 
 def send_telegram(message):
     for chat_id in FRIENDS_IDS:
@@ -60,29 +52,32 @@ def send_telegram(message):
             requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=10)
         except: pass
 
-def analyze_coin(symbol):
+def analyze_v20_fast(symbol):
     try:
         bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=30)
         df = pd.DataFrame(bars, columns=['t','o','h','l','c','v'])
+        
+        # حماية من الـ Pump & Dump (أكثر من 7% صعود في شمعة واحدة)
         last_change = ((df['c'].iloc[-1] - df['o'].iloc[-1]) / df['o'].iloc[-1]) * 100
-        if last_change > 7.0: return 0 # فلترة الـ Pump
+        if last_change > 7.0: return 0
         
         score = 0
+        # شروط النقاط الـ 20
         if df['v'].iloc[-1] > df['v'].iloc[-10:-1].mean() * 2.5: score += 10
         if df['c'].iloc[-1] > df['c'].ewm(span=20).mean().iloc[-1]: score += 10
         return score
     except: return 0
 
-# --- 4. المحرك الرئيسي (المسح والمراقبة) ---
+# --- 4. المحرك الرئيسي (نخبة الـ 900 عملة) ---
 
-def scan_and_trade():
+def main_engine():
     global blacklist_coins
-    send_telegram("🚀 *Sniper v20.0 Deployed on Render*\nنظام الحماية والنبض مفعّل.")
+    send_telegram("🚀 *Sniper v21.0 (Scalping) Deployed*\n✅ تفعيل الأرباح: `3%` | 📉 الفارق: `1%` | 🛑 الوقف: `3.5%`")
     
     while True:
         try:
-            # تنظيف القائمة السوداء (Blacklist)
             now = datetime.now()
+            # تنظيف قائمة الانتظار
             blacklist_coins = {s: t for s, t in blacklist_coins.items() if now < t}
 
             if len(active_trades) < MAX_TRADES:
@@ -92,7 +87,7 @@ def scan_and_trade():
                 
                 def check_logic(s):
                     if s not in active_trades and s not in blacklist_coins:
-                        score = analyze_coin(s)
+                        score = analyze_v20_fast(s)
                         if score >= 15:
                             return {'symbol': s, 'score': score, 'price': tickers[s]['last'], 'vol': tickers[s]['quoteVolume']}
                     return None
@@ -108,14 +103,16 @@ def scan_and_trade():
                     
                     active_trades[s] = {'entry': p, 'highest_price': p, 'time': now.strftime('%H:%M:%S')}
                     
+                    # إشعار الدخول المطور
                     sl = p * (1 - STOP_LOSS_PCT)
                     tp = p * (1 + ACTIVATION_PROFIT)
                     
                     msg = (
-                        f"🔔 *دخول صفقة (النخبة)*\n"
+                        f"🔔 *دخول صفقة (نخبة)*\n━━━━━━━━━━━━━━\n"
                         f"🪙 *العملة:* `{s}` | ✨ *النقاط:* `{best['score']}/20`\n"
-                        f"💰 *السعر:* `{p}` | 🛑 *الوقف:* `{sl:.8f}`\n"
-                        f"🎯 *الهدف:* `{tp:.8f}` | ⏰ `{now.strftime('%H:%M:%S')}`"
+                        f"💰 *دخول:* `{p}` | 🛑 *وقف:* `{sl:.8f}`\n"
+                        f"🎯 *هدف تفعيل:* `{tp:.8f}`\n"
+                        f"⏰ *الوقت:* `{now.strftime('%H:%M:%S')}`\n━━━━━━━━━━━━━━"
                     )
                     send_telegram(msg)
 
@@ -130,29 +127,28 @@ def monitor_trades():
                 if cp > trade['highest_price']: active_trades[s]['highest_price'] = cp
                 
                 gain = (cp - trade['entry']) / trade['entry']
-                drop = (trade['highest_price'] - cp) / trade['highest_price']
+                drop_from_peak = (trade['highest_price'] - cp) / trade['highest_price']
                 
-                if gain <= -STOP_LOSS_PCT or (gain >= ACTIVATION_PROFIT and drop >= TRAILING_GAP):
+                exit_now = False
+                reason = ""
+                
+                if gain <= -STOP_LOSS_PCT:
+                    exit_now = True; reason = "STOP LOSS"
+                elif gain >= ACTIVATION_PROFIT and drop_from_peak >= TRAILING_GAP:
+                    exit_now = True; reason = "TRAILING TP"
+
+                if exit_now:
                     pnl = gain * 100
-                    send_telegram(f"🏁 *خروج:* `{s}`\nالنتيجة: `{pnl:+.2f}%`")
+                    send_telegram(f"🏁 *إغلاق صفقة ({reason})*\n🪙 `{s}`\n📊 النتيجة: `{pnl:+.2f}%`")
                     closed_today.append({'symbol': s, 'pnl': pnl})
                     blacklist_coins[s] = datetime.now() + timedelta(hours=1)
                     del active_trades[s]
             time.sleep(10)
         except: time.sleep(5)
 
-# --- 5. التشغيل النهائي ---
-
 if __name__ == "__main__":
-    # تشغيل السيرفر (Flask)
     port = int(os.environ.get("PORT", 5000))
     Thread(target=lambda: app.run(host='0.0.0.0', port=port)).start()
-    
-    # تشغيل النبض للبقاء مستيقظاً
     Thread(target=keep_alive).start()
-    
-    # تشغيل المراقبة
     Thread(target=monitor_trades).start()
-    
-    # تشغيل المحرك الرئيسي
-    scan_and_trade()
+    main_engine()
