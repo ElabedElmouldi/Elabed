@@ -18,168 +18,131 @@ def send_telegram(message):
             requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=10)
         except: pass
 
-# --- 2. الإعدادات المالية الجديدة (10 صفقات × 100$) ---
+# --- 2. الإعدادات المالية والفلترة ---
 MAX_TRADES = 10
-TRADE_AMOUNT = 100 # مبلغ كل صفقة
+TRADE_AMOUNT = 100
+TAKE_PROFIT_PCT = 0.03
 STOP_LOSS_PCT = 0.03
-ACTIVATION_PCT = 0.025
-TRAILING_CALLBACK = 0.01
-MAX_24H_CHANGE = 0.10
 
-BLACKLIST = [
-    'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT', 'ADA/USDT',
-    'USDC/USDT', 'FDUSD/USDT', 'USDP/USDT', 'TUSD/USDT', 'DAI/USDT', 'EUR/USDT', 
-    'USD1/USDT', 'USDE/USDT', 'PYUSD/USDT', 'USTC/USDT', 'BUSD/USDT', 'AEUR/USDT',
-    'WBTC/USDT', 'WETH/USDT', 'PAXG/USDT'
+# قائمة الاستبعاد (العملات الكبيرة والمستقرة)
+STABLE_AND_BIG = [
+    'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT', 'LTC/USDT', 'ADA/USDT',
+    'USDC/USDT', 'FDUSD/USDT', 'TUSD/USDT', 'DAI/USDT', 'USDE/USDT', 'PYUSD/USDT', 'EUR/USDT'
 ]
 
-VOL_MIN = 10000000 
-VOL_MAX = 400000000 
-
-exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
+exchange = ccxt.binance({'enableRateLimit': True})
 active_trades = {}
-last_report_time = datetime.now()
+scan_index = 0 # مؤشر الدوران للمجموعات
 
-def get_indicators(df):
-    close = df['c']
-    ema50 = close.ewm(span=50, adjust=False).mean()
-    ema20 = close.ewm(span=20, adjust=False).mean()
-    delta = close.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rsi = 100 - (100 / (1 + (gain / loss.replace(0, 0.1))))
-    macd = close.ewm(span=12).mean() - close.ewm(span=26).mean()
-    signal = macd.ewm(span=9).mean()
-    return ema50, ema20, rsi, macd, signal
+# --- 3. محرك المسح الدوّار (The Cyclic Scanner) ---
 
-def analyze_v12(symbol, change_24h):
-    if change_24h >= MAX_24H_CHANGE: return {'ready': False}
+def explosion_logic(symbol):
+    """ تحليل فني سريع لرصد الانفجار """
     try:
-        bars_1h = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=60)
-        df_1h = pd.DataFrame(bars_1h, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-        ema50_1h, _, _, _, _ = get_indicators(df_1h)
-
-        bars_15m = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=100)
-        df_15m = pd.DataFrame(bars_15m, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-        ema50_15m, ema20_15m, rsi_15m, macd, macd_sig = get_indicators(df_15m)
-
-        # الشروط الإلزامية
-        if df_1h['c'].iloc[-1] <= ema50_1h.iloc[-1]: return {'ready': False}
-        vol_avg = df_15m['v'].iloc[-20:-1].mean()
-        if df_15m['v'].iloc[-1] < vol_avg * 1.5: return {'ready': False}
-
-        score = 0
-        if rsi_15m.iloc[-1] > 50: score += 1
-        if df_15m['c'].iloc[-1] > ema20_15m.iloc[-1]: score += 1
-        if 48 < rsi_15m.iloc[-1] < 70: score += 1
-        if macd.iloc[-1] > macd_sig.iloc[-1]: score += 1
-        if ema20_15m.iloc[-1] > ema50_15m.iloc[-1]: score += 1
-        if df_15m['c'].iloc[-1] > df_15m['o'].iloc[-1]: score += 1
-        if rsi_15m.iloc[-1] > rsi_15m.iloc[-2]: score += 1
-        if df_1h['c'].iloc[-1] > df_1h['o'].iloc[-1]: score += 1
-
-        if score >= 5:
-            return {'price': df_15m['c'].iloc[-1], 'score': score + 2, 'ready': True}
-    except: pass
-    return {'ready': False}
-
-# --- 3. نظام تقارير المحفظة ---
-def send_portfolio_report():
-    try:
-        balance = exchange.fetch_balance()
-        free_usdt = balance['free']['USDT']
+        bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=30)
+        df = pd.DataFrame(bars, columns=['t','o','h','l','c','v'])
         
-        total_used = len(active_trades) * TRADE_AMOUNT
-        unrealized_pnl_usd = 0
-        trades_details = ""
+        # مؤشر قوة السيولة
+        vol_current = df['v'].iloc[-1]
+        vol_avg = df['v'].iloc[-15:-1].mean()
+        
+        score = 0
+        if vol_current > vol_avg * 2: score += 5  # انفجار فوليوم
+        if df['c'].iloc[-1] > df['o'].iloc[-1] * 1.015: score += 3 # صعود > 1.5%
+        
+        return score if score >= 5 else None
+    except: return None
 
-        for symbol, data in active_trades.items():
-            current_price = exchange.fetch_ticker(symbol)['last']
-            pnl_pct = (current_price - data['entry']) / data['entry']
-            pnl_usd = TRADE_AMOUNT * pnl_pct
-            unrealized_pnl_usd += pnl_usd
-            trades_details += f"🔸 `{symbol}`: `{pnl_pct*100:+.2f}%` (`{pnl_usd:+.2f}$`)\n"
+def get_600_filtered_symbols():
+    """ جلب وترتيب العملات حسب السيولة مع استبعاد الكبيرة والمستقرة """
+    try:
+        tickers = exchange.fetch_tickers()
+        # فلترة العملات: يجب أن تكون USDT، ليست في القائمة السوداء، وليست عملة مستقرة (بحث بالاسم)
+        filtered = [
+            s for s in tickers.keys() 
+            if '/USDT' in s 
+            and s not in STABLE_AND_BIG 
+            and 'USD' not in s.split('/')[0] # استبعاد أي عملة فيها كلمة USD
+        ]
+        # ترتيب حسب حجم التداول 24 ساعة (من الأعلى للأقل)
+        sorted_symbols = sorted(filtered, key=lambda x: tickers[x]['quoteVolume'], reverse=True)
+        return sorted_symbols[:600]
+    except: return []
 
-        total_wallet_value = free_usdt + total_used + unrealized_pnl_usd
+# --- 4. نظام التقارير والعمليات ---
 
-        report = (
-            f"📊 *تقرير المحفظة الساعي (v12.0)*\n"
-            f"━━━━━━━━━━━━━━\n"
-            f"💰 *الرصيد الكلي:* `{total_wallet_value:.2f}$` \n"
-            f"💵 *رصيد متاح (Free):* `{free_usdt:.2f}$` \n"
-            f"🏗️ *رصيد مستعمل:* `{total_used:.2f}$` \n"
-            f"📈 *أرباح/خسائر عائمة:* `{unrealized_pnl_usd:+.2f}$` \n"
-            f"━━━━━━━━━━━━━━\n"
-            f"📑 *الصفقات النشطة ({len(active_trades)}/{MAX_TRADES}):*\n"
-            f"{trades_details if trades_details else 'لا توجد صفقات حالياً'}"
-        )
-        send_telegram(report)
-    except Exception as e:
-        print(f"Report Error: {e}")
+def run_cyclic_scan():
+    global scan_index, active_trades
+    all_symbols = get_600_filtered_symbols()
+    if not all_symbols: return
+    
+    # تقسيم 600 عملة إلى 4 مجموعات (0-150, 150-300, 300-450, 450-600)
+    start = scan_index * 150
+    end = start + 150
+    current_group = all_symbols[start:end]
+    
+    found_opportunities = []
+    for s in current_group:
+        if s in active_trades: continue
+        score = explosion_logic(s)
+        if score:
+            found_opportunities.append((s, score))
+            # فتح صفقة إذا كانت الإشارة قوية جداً
+            if score >= 8 and len(active_trades) < MAX_TRADES:
+                price = exchange.fetch_ticker(s)['last']
+                active_trades[s] = {'entry': price}
+                send_telegram(f"🚀 *دخول آلي:* `{s}`\nالسعر: `{price}`")
 
-# --- 4. المحرك التنفيذي ---
+    # إرسال تقرير الرادار (كل 15 دقيقة)
+    radar_text = f"🛰️ *رادار الانفجار (المجموعة {scan_index+1}/4)*\n"
+    radar_text += f"🔍 تم فحص عملات الترتيب من `{start}` إلى `{end}`\n"
+    if found_opportunities:
+        # ترتيب حسب الأقوى
+        found_opportunities.sort(key=lambda x: x[1], reverse=True)
+        for s, sc in found_opportunities[:5]:
+            radar_text += f"🔥 `{s}` | القوة: `{sc}/10` \n"
+    else:
+        radar_text += "_لا توجد انفجارات في هذه المجموعة حالياً._"
+    
+    send_telegram(radar_text)
+    
+    # تحديث المؤشر للدورة القادمة
+    scan_index = (scan_index + 1) % 4
+
+# --- 5. المحرك التنفيذي ---
+
 def main_engine():
-    global last_report_time
-    send_telegram("🚀 *v12.0 Deployed Successfully*\n- نظام 10 صفقات × 100$\n- تقارير المحفظة: نشطة كل ساعة")
+    send_telegram("📡 *v12.6 System Online*\n- مسح 600 عملة دورياً\n- تقارير رادار كل 15 دقيقة")
+    
+    last_scan_time = datetime.now() - timedelta(minutes=16)
 
     while True:
         try:
             now = datetime.now()
 
-            # أ. التتبع السريع (كل 10 ثوانٍ)
-            for _ in range(6):
-                for symbol in list(active_trades.keys()):
-                    try:
-                        ticker = exchange.fetch_ticker(symbol)
-                        cp = ticker['last']
-                        trade = active_trades[symbol]
-                        if cp > trade['highest_p']: trade['highest_p'] = cp
-                        
-                        if not trade['trailing_active'] and cp >= trade['entry'] * (1 + ACTIVATION_PCT):
-                            trade['trailing_active'] = True
-                            send_telegram(f"⚡ *Trailing:* `{symbol}`")
-
-                        reason = ""
-                        if not trade['trailing_active'] and cp <= trade['sl']: reason = "🛑 SL"
-                        elif trade['trailing_active'] and cp <= trade['highest_p'] * (1 - TRAILING_CALLBACK): reason = "💰 TP"
-
-                        if reason:
-                            pnl = (cp - trade['entry']) / trade['entry']
-                            send_telegram(f"{reason}: `{symbol}` ({pnl*100:+.2f}%)")
-                            del active_trades[symbol]
-                    except: continue
-                time.sleep(10)
-
-            # ب. فتح صفقات جديدة (بشرط توفر رصيد)
-            if len(active_trades) < MAX_TRADES:
-                tickers = exchange.fetch_tickers()
-                potential = [s for s, d in tickers.items() if '/USDT' in s and s not in BLACKLIST and VOL_MIN < d['quoteVolume'] < VOL_MAX]
+            # أ. مراقبة الإغلاق (كل 10 ثوانٍ)
+            for symbol in list(active_trades.keys()):
+                ticker = exchange.fetch_ticker(symbol)
+                pnl = (ticker['last'] - active_trades[symbol]['entry']) / active_trades[symbol]['entry']
                 
-                for s in potential[:100]:
-                    if s in active_trades: continue
-                    if len(active_trades) >= MAX_TRADES: break
-                    
-                    sig = analyze_v12(s, tickers[s]['percentage']/100)
-                    if sig and sig['ready']:
-                        entry_p = sig['price']
-                        active_trades[s] = {
-                            'entry': entry_p, 'sl': entry_p * (1 - STOP_LOSS_PCT), 
-                            'highest_p': entry_p, 'trailing_active': False, 
-                            'start_dt': now
-                        }
-                        send_telegram(f"💎 *Entry Verified (100$)*\n🪙 `{s}` | 💵 `{entry_p}`")
+                if pnl >= TAKE_PROFIT_PCT or pnl <= -STOP_LOSS_PCT:
+                    status = "✅ ربح" if pnl > 0 else "🛑 وقف"
+                    send_telegram(f"{status}: `{symbol}` ({pnl*100:+.2f}%)")
+                    del active_trades[symbol]
+                    # إرسال حالة المحفظة (اختياري)
 
-            # ج. إرسال التقرير الشامل كل ساعة
-            if now >= last_report_time + timedelta(hours=1):
-                send_portfolio_report()
-                last_report_time = now
+            # ب. تشغيل المسح الدوّار كل 15 دقيقة
+            if now >= last_scan_time + timedelta(minutes=15):
+                run_cyclic_scan()
+                last_scan_time = now
 
-        except: time.sleep(15)
+            time.sleep(20)
+        except Exception as e:
+            time.sleep(30)
 
 if __name__ == "__main__":
     app = Flask('')
     @app.route('/')
-    def h(): return "Bot v12.0 Active"
-    port = int(os.environ.get("PORT", 5000))
-    Thread(target=lambda: app.run(host='0.0.0.0', port=port)).start()
+    def h(): return "Bot v12.6 Cyclic Scanner Active"
+    Thread(target=lambda: app.run(host='0.0.0.0', port=5000)).start()
     main_engine()
