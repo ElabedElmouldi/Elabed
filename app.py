@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "2107567005"]
 DATA_FILE = "bot_data.json"
-APP_URL = "https://your-app-name.onrender.com" # استبدله برابط السيرفر الخاص بك
+APP_URL = "https://your-app-name.onrender.com"
 
 exchange = ccxt.binance({
     'apiKey': os.environ.get('BINANCE_API_KEY', ''),
@@ -47,8 +47,8 @@ def save_data():
         }
         with open(DATA_FILE, 'w') as f:
             json.dump(data, f)
-    except Exception as e:
-        print(f"Save Error: {e}")
+    except:
+        pass
 
 def load_data():
     global wallet_balance, active_trades, daily_start_balance, last_reset_date
@@ -60,8 +60,8 @@ def load_data():
                 active_trades = data.get('active_trades', {})
                 daily_start_balance = data.get('daily_start_balance', wallet_balance)
                 last_reset_date = data.get('last_reset_date', str(datetime.now().date()))
-        except Exception as e:
-            print(f"Load Error: {e}")
+        except:
+            pass
 
 load_data()
 
@@ -85,16 +85,15 @@ def is_btc_safe():
 def check_daily_limits():
     global daily_start_balance, last_reset_date, wallet_balance
     now_date = str(datetime.now().date())
-    
     if now_date != last_reset_date:
         daily_start_balance = wallet_balance
         last_reset_date = now_date
         save_data()
-        send_telegram(f"🌅 *يوم جديد:* تم تصفير الأهداف.\n💰 رصيد البداية: `{daily_start_balance:.2f}$` ")
+        send_telegram(f"🌅 *يوم جديد:* تم تصفير الأهداف.\n💰 الرصيد: `{daily_start_balance:.2f}$` ")
 
     pnl_pct = (wallet_balance - daily_start_balance) / daily_start_balance
     if pnl_pct >= 0.10:
-        return False, "✅ تم بلوغ هدف الربح اليومي (+10%)"
+        return False, "✅ تم تحقيق هدف الربح اليومي (+10%)"
     if pnl_pct <= -0.03:
         return False, "🛑 تم بلوغ حد الخسارة اليومي (-3%)"
     return True, ""
@@ -107,7 +106,6 @@ def get_breakout_score(symbol):
         cp = df['c'].iloc[-1]
         ema20 = df['c'].ewm(span=20).mean().iloc[-1]
         avg_v = df['v'].tail(20).mean()
-        
         score = 0
         if cp > ema20: score += 2
         if df['v'].iloc[-1] > avg_v * 2: score += 5
@@ -128,7 +126,6 @@ def monitor_thread():
                 ticker = exchange.fetch_ticker(s)
                 cp = ticker['last']
                 trade = active_trades[s]
-                
                 if cp > trade.get('highest_price', 0):
                     active_trades[s]['highest_price'] = cp
                     if not trade.get('tr_act', False) and ((cp - trade['entry']) / trade['entry']) >= ACTIVATION_PROFIT:
@@ -139,7 +136,6 @@ def monitor_thread():
                 highest = active_trades[s]['highest_price']
                 gain = (cp - trade['entry']) / trade['entry']
                 drop = (highest - cp) / highest
-                
                 exit_now = False
                 res_reason = ""
                 if trade.get('tr_act', False) and drop >= TRAILING_GAP:
@@ -154,6 +150,86 @@ def monitor_thread():
                     dur = datetime.now() - entry_dt
                     pnl_usd = TRADE_AMOUNT_USD * gain
                     wallet_balance += pnl_usd
-                    
-                    msg = (f"🏁 *تقرير إغلاق صفقة*\n━━━━━━━━━━━━━━\n"
-                           f"🪙 *
+                    msg = (f"🏁 *إغلاق صفقة:* `{s}`\n"
+                           f"📈 النتيجة: `{gain*100:+.2f}%`\n"
+                           f"⏱️ المدة: `{dur.seconds//3600}س {(dur.seconds%3600)//60}د`\n"
+                           f"🏦 المحفظة: `{wallet_balance:.2f}$` ")
+                    send_telegram(msg)
+                    del active_trades[s]
+                    save_data()
+            time.sleep(10)
+        except:
+            time.sleep(5)
+
+# --- 6. التقارير والخدمات المساعدة ---
+def hourly_report_thread():
+    while True:
+        time.sleep(3600)
+        pnl_d = ((wallet_balance - daily_start_balance) / daily_start_balance) * 100
+        send_telegram(f"📊 *تقرير الساعة*\n💰 الرصيد: `{wallet_balance:.2f}$` \n📈 أداء اليوم: `{pnl_d:+.2f}%` ")
+
+def keep_alive_thread():
+    while True:
+        try: requests.get(APP_URL, timeout=10)
+        except: pass
+        time.sleep(300)
+
+# --- 7. المحرك الرئيسي ---
+def main_engine():
+    send_telegram("🛡️ *Sniper v170.0 Online*")
+    last_scan = datetime.now() - timedelta(minutes=10)
+    while True:
+        try:
+            is_safe, msg_limit = check_daily_limits()
+            if not is_safe:
+                time.sleep(600)
+                continue
+
+            now = datetime.now()
+            if now >= last_scan + timedelta(seconds=SCAN_INTERVAL):
+                if not is_btc_safe():
+                    last_scan = now
+                    time.sleep(30)
+                    continue
+                
+                markets = exchange.fetch_markets()
+                all_usdt = [m['symbol'] for m in markets if m['quote'] == 'USDT' and m['spot'] and m['base'] not in STABLE_COINS]
+                tickers = exchange.fetch_tickers(all_usdt)
+                targets = sorted(all_usdt, key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)[20:520]
+
+                with ThreadPoolExecutor(max_workers=15) as executor:
+                    raw_res = list(executor.map(lambda s: {'s': s, 'd': get_breakout_score(s)}, targets))
+                    res_sorted = sorted([r for r in raw_res if r['d'][0] >= 12], key=lambda x: x['d'][0], reverse=True)
+
+                if res_sorted:
+                    best = res_sorted[0]
+                    if best['s'] not in active_trades and len(active_trades) < MAX_TRADES:
+                        active_trades[best['s']] = {
+                            'entry': best['d'][1], 
+                            'highest_price': best['d'][1],
+                            'entry_time': now.strftime('%Y-%m-%d %H:%M:%S'), 
+                            'tr_act': False
+                        }
+                        sl = best['d'][1] * 0.98
+                        msg = (f"🔔 *صفقة جديدة:* `{best['s']}`\n"
+                               f"💰 السعر: `{best['d'][1]}`\n"
+                               f"🛑 الوقف: `{sl:.6f}`")
+                        send_telegram(msg)
+                        save_data()
+                last_scan = now
+            time.sleep(20)
+        except Exception as e:
+            print(f"Error: {e}")
+            time.sleep(10)
+
+# --- 8. تشغيل الخادم ---
+app = Flask('')
+@app.route('/')
+def home(): return "Mouldi Sniper is Online"
+
+if __name__ == "__main__":
+    Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))).start()
+    Thread(target=monitor_thread).start()
+    Thread(target=hourly_report_thread).start()
+    Thread(target=keep_alive_thread).start()
+    main_engine()
