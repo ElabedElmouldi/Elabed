@@ -19,14 +19,16 @@ exchange = ccxt.binance({
     'options': {'defaultType': 'spot'}
 })
 
-# --- إعدادات المحفظة والتتبع (تعديلاتك الجديدة) ---
-MAX_TRADES = 20            
-TRADE_AMOUNT_USD = 10.0    
+# --- إعدادات المحفظة (تعديلاتك الجديدة) ---
+MAX_TRADES = 10            # 10 صفقات
+TRADE_AMOUNT_USD = 100.0   # 100 دولار لكل صفقة
 SCAN_INTERVAL = 300        
-STOP_LOSS_PCT = 0.02       # ✅ وقف خسارة عند -2%
-ACTIVATION_PROFIT = 0.04   # ✅ تنشيط التتبع عند +4%
-TRAILING_GAP = 0.02        # ✅ فارق تتبع 2%
+STOP_LOSS_PCT = 0.02       # وقف خسارة -2%
+ACTIVATION_PROFIT = 0.04   # تنشيط التتبع عند +4%
+TRAILING_GAP = 0.02        # فارق تتبع 2%
 
+# نظام تتبع قيمة المحفظة
+wallet_balance = 1000.0    # القيمة الابتدائية للمحفظة
 active_trades = {}
 STABLE_COINS = ['USDC', 'FDUSD', 'TUSD', 'BUSD', 'DAI', 'EUR', 'GBP', 'PAXG', 'AEUR', 'USDP', 'USDT']
 
@@ -37,18 +39,15 @@ def send_telegram(message):
             requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=10)
         except: pass
 
-# --- 2. محرك الفلترة (نظام الـ 20 شرطاً) ---
+# --- 2. محرك الفلترة (20 شرطاً) ---
 def get_breakout_score(symbol):
     try:
         bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=60)
         df = pd.DataFrame(bars, columns=['t','o','h','l','c','v'])
-        cp = df['c'].iloc[-1]
-        score = 0
-        
+        cp = df['c'].iloc[-1]; score = 0
         ema20 = df['c'].ewm(span=20).mean().iloc[-1]
         avg_v = df['v'].tail(20).mean()
         
-        # شروط الانفجار
         if cp > ema20: score += 2
         if df['v'].iloc[-1] > avg_v * 2: score += 5
         if cp > df['h'].iloc[-2]: score += 3
@@ -59,8 +58,9 @@ def get_breakout_score(symbol):
         return score, cp
     except: return 0, 0
 
-# --- 3. خيط المراقبة (تتبع 2% بعد ربح 4% ووقف -2%) ---
+# --- 3. خيط المراقبة وتحديث المحفظة ---
 def monitor_thread():
+    global wallet_balance
     while True:
         try:
             for s in list(active_trades.keys()):
@@ -68,36 +68,43 @@ def monitor_thread():
                 cp = ticker['last']
                 trade = active_trades[s]
                 
-                # تحديث القمة السعرية
                 if cp > trade.get('highest_price', 0):
                     active_trades[s]['highest_price'] = cp
                 
                 highest = active_trades[s]['highest_price']
                 gain = (cp - trade['entry']) / trade['entry']
-                drop_from_peak = (highest - cp) / highest
+                drop = (highest - cp) / highest
                 
                 exit_now = False
                 reason = ""
 
-                # منطق الخروج
-                if gain >= ACTIVATION_PROFIT and drop_from_peak >= TRAILING_GAP:
-                    exit_now = True
-                    reason = f"TRAILING TP (Peak: {gain*100:.2f}%)"
+                if gain >= ACTIVATION_PROFIT and drop >= TRAILING_GAP:
+                    exit_now = True; reason = "تتبع الربح (Trailing)"
                 elif gain <= -STOP_LOSS_PCT:
-                    exit_now = True
-                    reason = "STOP LOSS (-2%)"
+                    exit_now = True; reason = "وقف الخسارة (-2%)"
 
                 if exit_now:
-                    pnl = gain * 100
-                    send_telegram(f"🏁 *إغلاق صفقة:* `{s}`\nالسبب: `{reason}`\nالنتيجة: `{pnl:+.2f}%` ")
+                    pnl_percent = gain * 100
+                    pnl_usd = TRADE_AMOUNT_USD * gain
+                    wallet_balance += pnl_usd # تحديث الرصيد الإجمالي
+                    
+                    status_emoji = "💰" if pnl_usd > 0 else "🛑"
+                    report = (
+                        f"{status_emoji} *تم إغلاق صفقة:* `{s}`\n"
+                        f"━ السبب: `{reason}`\n"
+                        f"━ الربح/الخسارة: `{pnl_percent:+.2f}%` (`{pnl_usd:+.2f}$`)\n"
+                        f"━━━━━━━━━━━━━━\n"
+                        f"🏦 *قيمة المحفظة الحالية:* `{wallet_balance:.2f}$`"
+                    )
+                    send_telegram(report)
                     del active_trades[s]
             
             time.sleep(10)
         except: time.sleep(5)
 
-# --- 4. المحرك الرئيسي (مسح 500 عملة ودخول تلقائي) ---
+# --- 4. المحرك الرئيسي ---
 def main_engine():
-    send_telegram(f"🚀 *تفعيل Sniper v80.0*\n🛡️ وقف خسارة: -2% | تتبع: 2% (بعد 4% ربح)\n💰 المحفظة: 20 صفقة × 10$")
+    send_telegram(f"🛡️ *تشغيل v85.0*\n🎯 النظام: 10 صفقات × 100$\n💰 المحفظة الابتدائية: `{wallet_balance}$` ")
     last_scan = datetime.now() - timedelta(minutes=10)
 
     while True:
@@ -117,12 +124,12 @@ def main_engine():
                 
                 if results:
                     # تقرير أفضل 5
-                    report = "🔝 *أفضل 5 عملات في المسح الحالي:*\n"
+                    top_5 = "🔝 *أفضل 5 عملات مكتشفة:*\n"
                     for i, res in enumerate(results[:5]):
-                        report += f"{i+1}. `{res['symbol']}` ➔ سكور: `{res['data'][0]}/20`\n"
-                    send_telegram(report)
+                        top_5 += f"{i+1}. `{res['symbol']}` ➔ `{res['data'][0]}/20`\n"
+                    send_telegram(top_5)
 
-                    # الدخول في المركز الأول (بدون تكرار)
+                    # الدخول التلقائي
                     best = results[0]
                     symbol = best['symbol']
                     if symbol not in active_trades and len(active_trades) < MAX_TRADES:
@@ -131,7 +138,7 @@ def main_engine():
                             'highest_price': best['data'][1],
                             'time': now.strftime('%H:%M:%S')
                         }
-                        send_telegram(f"🔔 *دخول تلقائي:* `{symbol}`\n💵 القيمة: `10$`\n📊 السكور: `{best['data'][0]}`")
+                        send_telegram(f"🔔 *دخول جديد:* `{symbol}`\n💵 الاستثمار: `100$`\n📊 السكور: `{best['data'][0]}`")
                 
                 last_scan = now
             time.sleep(30)
