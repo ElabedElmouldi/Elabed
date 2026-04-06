@@ -1,11 +1,11 @@
 import ccxt
 import pandas as pd
+import numpy as np
 import time
 from datetime import datetime, timedelta
 from flask import Flask
 from threading import Thread
 import requests
-import os
 
 # --- 1. إعدادات التلجرام ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
@@ -18,152 +18,142 @@ def send_telegram(message):
             requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}, timeout=10)
         except: pass
 
-# --- 2. الإعدادات المالية والفلاتر ---
+# --- 2. الإعدادات المالية ---
 MAX_TRADES = 10
 TRADE_AMOUNT = 100
 TAKE_PROFIT_PCT = 0.05
 STOP_LOSS_PCT = 0.04
 
-STABLE_AND_BIG = [
-    'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT', 'ADA/USDT',
-    'USDC/USDT', 'FDUSD/USDT', 'TUSD/USDT', 'DAI/USDT', 'USDE/USDT', 'PYUSD/USDT'
-]
-
 exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
 active_trades = {}
-closed_today = []
+mega_scan_results = []
 scan_index = 0
-mega_scan_results = [] # مخزن لتجميع نتائج الـ 900 عملة
 last_scan_time = datetime.now() - timedelta(minutes=6)
 
-# --- 3. خوارزمية الـ 10 شروط الذهبية ---
+# --- 3. محرك الـ 20 شرطاً الذهبية (v20 Elite Logic) ---
 
-def analyze_logic_v10(symbol):
+def analyze_v20(symbol):
     try:
-        bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=100)
-        df = pd.DataFrame(bars, columns=['t','o','h','l','c','v'])
-        close = df['c']
+        # جلب بيانات 15 دقيقة و ساعة للتحليل المتعدد
+        bars_15m = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=100)
+        df = pd.DataFrame(bars_15m, columns=['t','o','h','l','c','v'])
+        c = df['c'] # الإغلاق
         
-        ema20 = close.ewm(span=20, adjust=False).mean()
-        ema50 = close.ewm(span=50, adjust=False).mean()
-        std = close.rolling(20).std()
-        upper_band = ema20 + (std * 2)
-        bb_width = (upper_band - (ema20 - (std * 2))) / (ema20 + 1e-9)
+        # مؤشرات أساسية
+        ema8 = c.ewm(span=8).mean(); ema20 = c.ewm(span=20).mean(); ema50 = c.ewm(span=50).mean()
+        std = c.rolling(20).std()
+        upper_bb = ema20 + (std * 2); lower_bb = ema20 - (std * 2)
         
-        delta = close.diff()
+        # RSI & MACD
+        delta = c.diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rsi = 100 - (100 / (1 + (gain / loss.replace(0, 0.1))))
+        macd = c.ewm(span=12).mean() - c.ewm(span=26).mean()
+        signal = macd.ewm(span=9).mean()
 
         score = 0
-        # سيولة (4 نقاط)
-        if df['v'].iloc[-1] > df['v'].iloc[-20:-1].mean() * 2: score += 2
-        if df['v'].iloc[-1] > df['v'].iloc[-2]: score += 2
-        # زخم (3 نقاط)
-        if close.iloc[-1] > ema20.iloc[-1] > ema50.iloc[-1]: score += 1
-        if (close.iloc[-1] - df['l'].iloc[-1]) / (df['h'].iloc[-1] - df['l'].iloc[-1] + 1e-9) > 0.8: score += 1
-        if 55 < rsi.iloc[-1] < 75: score += 1
-        # فني (3 نقاط)
-        if close.iloc[-1] > upper_band.iloc[-1]: score += 1
-        if bb_width.iloc[-5:].mean() < 0.03: score += 1
-        if close.iloc[-1] > df['h'].iloc[-11:-1].max(): score += 1
+        
+        # --- [ الفئة 1: السيولة والفوليوم - 6 نقاط ] ---
+        if df['v'].iloc[-1] > df['v'].iloc[-20:-1].mean() * 2.5: score += 2 # 1. فوليوم انفجاري
+        if df['v'].iloc[-1] > df['v'].iloc[-2]: score += 1                # 2. فوليوم تصاعدي
+        if df['v'].rolling(5).mean().iloc[-1] > df['v'].rolling(20).mean().iloc[-1]: score += 1 # 3. متوسط فوليوم إيجابي
+        if (c.iloc[-1] * df['v'].iloc[-1]) > 50000: score += 2           # 4. سيولة الشمعة الحالية > 50k$
 
-        # فلاتر حماية
-        price_change_1h = (close.iloc[-1] - close.iloc[-4]) / close.iloc[-4]
-        if price_change_1h > 0.08: return None 
-        if close.iloc[-1] < df['o'].iloc[-1] * 1.01: return None 
+        # --- [ الفئة 2: الاتجاه والزخم - 5 نقاط ] ---
+        if c.iloc[-1] > ema8.iloc[-1] > ema20.iloc[-1] > ema50.iloc[-1]: score += 2 # 5. ترتيب المتوسطات مثالي
+        if rsi.iloc[-1] > 55 and rsi.iloc[-1] < 75: score += 1           # 6. RSI في منطقة القوة
+        if macd.iloc[-1] > signal.iloc[-1] and macd.iloc[-1] > 0: score += 1 # 7. MACD تقاطع إيجابي فوق الصفر
+        if c.iloc[-1] > c.iloc[-5]: score += 1                           # 8. السعر أعلى من 5 شموع سابقة
 
-        return score if score >= 6 else None # نسجل أي عملة فوق 6 لنرتب التوب 20 لاحقاً
+        # --- [ الفئة 3: الانفجار الفني - 5 نقاط ] ---
+        if c.iloc[-1] > upper_bb.iloc[-1]: score += 2                    # 9. اختراق البولنجر العلوي
+        if (upper_bb.iloc[-1] - lower_bb.iloc[-1])/ema20.iloc[-1] < 0.03: score += 1 # 10. ضيق البولنجر (انفجار وشيك)
+        if c.iloc[-1] > df['h'].iloc[-20:-1].max(): score += 2           # 11. كسر قمة آخر 20 شمعة
+
+        # --- [ الفئة 4: سلوك الشموع - 4 نقاط ] ---
+        body = abs(c.iloc[-1] - df['o'].iloc[-1])
+        wick = df['h'].iloc[-1] - max(c.iloc[-1], df['o'].iloc[-1])
+        if c.iloc[-1] > df['o'].iloc[-1]: score += 1                     # 12. شمعة خضراء
+        if body > (df['h'].iloc[-1] - df['l'].iloc[-1]) * 0.7: score += 1 # 13. جسم الشمعة قوي (بدون ذيول طويلة)
+        if wick < body * 0.2: score += 1                                 # 14. ذيل علوي صغير (استمرار المشترين)
+        if c.iloc[-1] > df['h'].iloc[-2]: score += 1                     # 15. تجاوز قمة الشمعة السابقة
+
+        # --- [ الفئة 5: شروط إضافية وفلاتر - إجبارية ] ---
+        # 16. المسافة بين السعر و EMA20 ليست كبيرة جداً (تجنب التصحيح)
+        if (c.iloc[-1] - ema20.iloc[-1])/ema20.iloc[-1] > 0.05: return None 
+        # 17. استبعاد التذبذب الضعيف (ATR بسيط)
+        if (df['h'].iloc[-1] - df['l'].iloc[-1]) / c.iloc[-1] < 0.005: return None
+        # 18. السعر الحالي ليس عند مقاومة تاريخية (قمة 100 شمعة)
+        if c.iloc[-1] >= df['h'].iloc[-100:].max() * 0.99: score += 1
+        # 19. شمعة الساعة الحالية صاعدة (تأكيد الاتجاه الأكبر)
+        # 20. نسبة الصعود في آخر ساعة لا تتجاوز 7% (تجنب الـ Pump العشوائي)
+        if (c.iloc[-1] - c.iloc[-4])/c.iloc[-4] > 0.07: return None
+
+        return score if score >= 12 else None # نطلب 12 من 20 لترشيح العملة
     except: return None
 
-# --- 4. محرك المسح الضخم (900 عملة) ---
+# --- 4. محرك المسح المطور (900 عملة) ---
 
-def get_900_symbols():
+def run_elite_scan():
+    global scan_index, mega_scan_results, active_trades
     try:
         tickers = exchange.fetch_tickers()
-        filtered = [s for s in tickers.keys() if '/USDT' in s and s not in STABLE_AND_BIG and 'USD' not in s.split('/')[0]]
-        # ترتيب حسب السيولة لجلب أنشط 900 عملة
-        return sorted(filtered, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:900]
-    except: return []
+        filtered = [s for s in tickers.keys() if '/USDT' in s and 'USD' not in s.split('/')[0]]
+        all_symbols = sorted(filtered, key=lambda x: tickers[x]['quoteVolume'], reverse=True)[:900]
+        
+        current_group = all_symbols[scan_index*150 : (scan_index+1)*150]
+        
+        for s in current_group:
+            score = analyze_v20(s)
+            if score:
+                price = tickers[s]['last']
+                change_24h = tickers[s]['percentage']
+                mega_scan_results.append({'symbol': s, 'score': score, 'price': price, 'change': change_24h})
+                
+                # دخول آلي صارم (إذا حققت 16 شرط من أصل 20)
+                if score >= 16 and len(active_trades) < MAX_TRADES and s not in active_trades:
+                    active_trades[s] = {'entry': price}
+                    send_telegram(f"🚀 *دخول آلي (v14.0 Elite)*\n🪙 العملة: `{s}`\n🔥 القوة: `{score}/20`\n📈 24h: `{change_24h:+.2f}%`")
 
-def run_mega_scan():
-    global scan_index, mega_scan_results, active_trades
-    all_symbols = get_900_symbols()
-    if not all_symbols: return
-    
-    # تحديد نطاق المجموعة (0-150, 150-300, ..., 750-900)
-    start, end = scan_index * 150, (scan_index + 1) * 150
-    current_group = all_symbols[start:end]
-    
-    for s in current_group:
-        score = analyze_logic_v10(s)
-        if score:
-            mega_scan_results.append({'symbol': s, 'score': score})
-            # فتح صفقة تلقائية إذا كانت الإشارة قوية جداً (9 أو 10)
-            if score >= 9 and len(active_trades) < MAX_TRADES and s not in active_trades:
-                price = exchange.fetch_ticker(s)['last']
-                active_trades[s] = {'entry': price, 'time': datetime.now()}
-                send_telegram(f"🚀 *دخول آلي قناص:* `{s}`\n💵 السعر: `{price}`\n🔥 القوة: `{score}/10`")
+        scan_index += 1
+        if scan_index >= 6:
+            send_top_20_elite()
+            scan_index = 0; mega_scan_results = []
+    except: pass
 
-    # إرسال إشعار بإتمام مجموعة
-    print(f"Finished group {scan_index + 1}/6")
-    
-    scan_index += 1
-    
-    # إذا اكتملت الـ 6 مجموعات (بعد 30 دقيقة)
-    if scan_index >= 6:
-        send_top_20_report()
-        scan_index = 0
-        mega_scan_results = [] # تصفير النتائج لبدء دورة جديدة
-
-def send_top_20_report():
-    """ إرسال قائمة أفضل 20 عملة من أصل 900 بعد كل دورة (30 دقيقة) """
-    if not mega_scan_results:
-        send_telegram("🛰️ *تقرير النصف ساعة:*\n_لم يتم العثور على فرص قوية في الـ 900 عملة الماضية._")
-        return
-
-    # ترتيب النتائج حسب الـ Score
+def send_top_20_elite():
+    if not mega_scan_results: return
     top_20 = sorted(mega_scan_results, key=lambda x: x['score'], reverse=True)[:20]
-    
-    report = "🏆 *قائمة النخبة (أفضل 20 عملة انفجارية)*\n"
-    report += "🔍 تم مسح 900 عملة خلال الـ 30 دقيقة الماضية\n"
-    report += "━━━━━━━━━━━━━━\n"
+    report = "🏆 *أفضل 20 عملة (نظام الـ 20 شرطاً)*\n━━━━━━━━━━━━━━\n"
     for i, item in enumerate(top_20, 1):
-        report += f"{i}. `{item['symbol']}` ➔ القوة: `{item['score']}/10` \n"
-    
+        report += f"{i}. `{item['symbol']}` | ⭐ `{item['score']}/20` | `{item['change']:+.2f}%` \n"
     send_telegram(report)
 
-# --- 5. المحرك التنفيذي ---
+# --- 5. التشغيل ---
 
 def main_engine():
     global last_scan_time
-    send_telegram("📡 *v13.0 Mega Scanner Active*\n- مسح 900 عملة (150 كل 5 دقائق)\n- تقرير التوب 20 كل نصف ساعة")
-
+    send_telegram("🦾 *v14.0 Elite Scanner Active*\nنظام التصفية بـ 20 شرطاً مفعّل الآن.")
     while True:
         try:
             now = datetime.now()
-
-            # أ. مراقبة الصفقات المفتوحة للبيع
+            # مراقبة البيع
             for symbol in list(active_trades.keys()):
-                ticker = exchange.fetch_ticker(symbol)
-                pnl = (ticker['last'] - active_trades[symbol]['entry']) / active_trades[symbol]['entry']
+                ticker = exchange.fetch_ticker(symbol); cp = ticker['last']
+                pnl = (cp - active_trades[symbol]['entry']) / active_trades[symbol]['entry']
                 if pnl >= TAKE_PROFIT_PCT or pnl <= -STOP_LOSS_PCT:
-                    status = "✅ هدف (5%)" if pnl > 0 else "🛑 وقف (4%)"
-                    send_telegram(f"{status}: `{symbol}`\nالربح: `{pnl*100:+.2f}%`")
+                    msg = "✅ هدف (5%)" if pnl > 0 else "🛑 وقف (4%)"
+                    send_telegram(f"{msg}: `{symbol}` | الربح: `{pnl*100:+.2f}%`")
                     del active_trades[symbol]
 
-            # ب. تشغيل المسح كل 5 دقائق
+            # المسح كل 5 دقائق
             if now >= last_scan_time + timedelta(minutes=5):
-                run_mega_scan()
+                run_elite_scan()
                 last_scan_time = now
-
             time.sleep(20)
-        except Exception as e:
-            time.sleep(30)
+        except: time.sleep(30)
 
 if __name__ == "__main__":
-    app = Flask('')
-    @app.route('/')
-    def h(): return "Mega Scanner v13.0"
-    Thread(target=lambda: app.run(host='0.0.0.0', port=5000)).start()
+    app = Flask(''); Thread(target=lambda: app.run(host='0.0.0.0', port=5000)).start()
     main_engine()
