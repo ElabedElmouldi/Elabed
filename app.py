@@ -1,4 +1,4 @@
-import ccxt
+عimport ccxt
 import pandas as pd
 import time
 import json
