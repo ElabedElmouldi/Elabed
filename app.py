@@ -9,10 +9,10 @@ from threading import Thread
 import requests
 from concurrent.futures import ThreadPoolExecutor
 
-# --- 1. الإعدادات (v4.7.0 - تحديث الإشعارات والأهداف) ---
+# --- 1. الإعدادات (v4.7.1 - النسخة المصححة) ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "-1003692815602"]
-DATA_FILE = "gold_trader_v470.json"
+DATA_FILE = "gold_trader_v471.json"
 RENDER_URL = "https://elabed.onrender.com" 
 
 exchange = ccxt.binance({'enableRateLimit': True})
@@ -22,9 +22,9 @@ TF_SLOW = '15m'
 SCAN_INTERVAL = 30 
 MAX_VIRTUAL_TRADES = 5
 
-# --- الأهداف الجديدة ---
-STOP_LOSS_PCT = 0.03    # وقف خسارة 3%
-TAKE_PROFIT_PCT = 0.03  # جني أرباح 3%
+# --- الأهداف (3% / 3%) ---
+STOP_LOSS_PCT = 0.03    
+TAKE_PROFIT_PCT = 0.03  
 
 STABLE_COINS = ['USDC', 'FDUSD', 'TUSD', 'BUSD', 'DAI', 'EUR', 'GBP', 'PAXG', 'AEUR', 'USDP', 'USDT']
 
@@ -65,7 +65,7 @@ def send_telegram(msg):
                            json={"chat_id": cid, "text": msg, "parse_mode": "Markdown"}, timeout=5)
         except: pass
 
-# --- 3. الأنظمة المساعدة ---
+# --- 3. نظام اليقظة ---
 def keep_alive_ping():
     while True:
         try: requests.get(RENDER_URL, timeout=10)
@@ -101,7 +101,7 @@ def analyze_coin(symbol):
                 return {'symbol': symbol, 'price': df_fast['c'].iloc[-1]}
     except: return None
 
-# --- 5. مراقبة الصفقات والإشعارات التفصيلية ---
+# --- 5. مراقبة الصفقات والإشعارات ---
 def monitor_trades():
     global virtual_balance, daily_pnl_usd
     while True:
@@ -114,25 +114,22 @@ def monitor_trades():
                 entry_p = trade['entry']
                 gain = (cp - entry_p) / entry_p
                 
-                exit_now = False
                 if gain >= TAKE_PROFIT_PCT or gain <= -STOP_LOSS_PCT:
-                    exit_now = True
-
-                if exit_now:
-                    # حساب مدة الصفقة
-                    start_time = datetime.strptime(trade['start_timestamp'], '%Y-%m-%d %H:%M:%S')
+                    # حساب المدة
+                    start_ts = trade.get('start_timestamp', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                    start_time = datetime.strptime(start_ts, '%Y-%m-%d %H:%M:%S')
                     duration = datetime.now() - start_time
-                    hours, remainder = divmod(duration.seconds, 3600)
+                    
+                    hours, remainder = divmod(int(duration.total_seconds()), 3600)
                     minutes, seconds = divmod(remainder, 60)
-                    duration_str = f"{duration.days}d {hours}h {minutes}m" if duration.days > 0 else f"{hours}h {minutes}m"
+                    duration_str = f"{hours}h {minutes}m {seconds}s"
 
                     pnl = 100 * gain
                     virtual_balance += pnl
                     daily_pnl_usd += pnl
                     
-                    # إشعار الخروج التفصيلي
                     exit_msg = (
-                        f"🏁 *إشعار خروج من صفقة*\n"
+                        f"🏁 *إشعار خروج*\n"
                         f"🪙 العملة: `{s}`\n"
                         f"📈 النتيجة: `{gain*100:+.2f}%`\n"
                         f"⏳ مدة الصفقة: `{duration_str}`"
@@ -141,11 +138,12 @@ def monitor_trades():
                     del virtual_trades[s]
                     save_data()
             time.sleep(10)
-        except: time.sleep(10)
+        except Exception as e:
+            print(f"Monitor Error: {e}")
+            time.sleep(10)
 
 def radar_engine():
-    global daily_pnl_usd, last_reset_date
-    send_telegram("🚀 *بوت الذهب v4.7.0 نشط*\nتم تحديث تنسيق الإشعارات والأهداف (3%/3%)")
+    send_telegram("🚀 *بوت الذهب v4.7.1 نشط*\nالأهداف: `3%/3%` | نظام الإشعارات: `مفصل`")
     
     while True:
         try:
@@ -161,9 +159,10 @@ def radar_engine():
 
             for res in results:
                 if res['symbol'] not in virtual_trades and len(virtual_trades) < MAX_VIRTUAL_TRADES:
-                    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    tp_price = res['price'] * (1 + TAKE_PROFIT_PCT)
-                    sl_price = res['price'] * (1 - STOP_LOSS_PCT)
+                    now_dt = datetime.now()
+                    now_str = now_dt.strftime('%Y-%m-%d %H:%M:%S')
+                    tp_p = res['price'] * (1 + TAKE_PROFIT_PCT)
+                    sl_p = res['price'] * (1 - STOP_LOSS_PCT)
                     
                     virtual_trades[res['symbol']] = {
                         'entry': res['price'], 
@@ -171,9 +170,29 @@ def radar_engine():
                     }
                     save_data()
                     
-                    # إشعار الدخول التفصيلي
                     entry_msg = (
-                        f"⚡ *إشعار دخول صفقة*\n"
+                        f"⚡ *إشعار دخول*\n"
                         f"🪙 اسم العملة: `{res['symbol']}`\n"
-                        f"💰 سعر الدخول: `{res['price']}`\n"
-                        f"🎯
+                        f"💰 سعر الدخول: `{res['price']:.4f}`\n"
+                        f"🎯 جني الأرباح: `{tp_p:.4f}`\n"
+                        f"🛡️ وقف الخسارة: `{sl_p:.4f}`\n"
+                        f"🕒 وقت الدخول: `{now_str}`"
+                    )
+                    send_telegram(entry_msg)
+            
+            time.sleep(SCAN_INTERVAL)
+        except Exception as e:
+            print(f"Radar Error: {e}")
+            time.sleep(20)
+
+# --- 6. التشغيل ---
+app = Flask('')
+@app.route('/')
+def home(): return "Bot v4.7.1 Active"
+
+if __name__ == "__main__":
+    load_data()
+    Thread(target=lambda: app.run(host='0.0.0.0', port=5000)).start()
+    Thread(target=monitor_trades).start()
+    Thread(target=keep_alive_ping).start()
+    radar_engine()
