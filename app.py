@@ -9,11 +9,11 @@ import requests
 import os
 from concurrent.futures import ThreadPoolExecutor
 
-# --- 1. الإعدادات والمعلومات الأساسية ---
+# --- 1. الإعدادات المحدثة ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "2107567005"]
 DATA_FILE = "bot_data.json"
-# ⚠️ ضع رابط السيرفر الخاص بك هنا (بدون https://) ليتمكن البوت من مراسلة نفسه
+# ⚠️ هام جداً: ضع رابط Render الخاص بك هنا ليعمل نظام منع النوم
 APP_URL = "your-app-name.onrender.com" 
 
 exchange = ccxt.binance({
@@ -23,16 +23,16 @@ exchange = ccxt.binance({
     'options': {'defaultType': 'spot'}
 })
 
-# ثوابت الاستراتيجية
 MAX_TRADES = 10
 TRADE_AMOUNT_USD = 100.0
-SCAN_INTERVAL = 300
+# ✅ تم التعديل لـ 15 دقيقة (900 ثانية) بناءً على طلبك
+SCAN_INTERVAL = 900 
 STOP_LOSS_PCT = 0.02       
 ACTIVATION_PROFIT = 0.04   
 TRAILING_GAP = 0.02        
 STABLE_COINS = ['USDC', 'FDUSD', 'TUSD', 'BUSD', 'DAI', 'EUR', 'GBP', 'PAXG', 'AEUR', 'USDP', 'USDT']
 
-# --- 2. إدارة البيانات والذاكرة ---
+# --- 2. إدارة البيانات ---
 active_trades = {}
 wallet_balance = 1000.0
 daily_start_balance = 1000.0
@@ -67,7 +67,7 @@ def send_telegram(msg):
                            json={"chat_id": cid, "text": msg, "parse_mode": "Markdown"}, timeout=10)
         except: pass
 
-# --- 3. فلاتر الأمان (BTC & Limits) ---
+# --- 3. فلاتر الأمان ---
 def is_btc_safe():
     try:
         btc_bars = exchange.fetch_ohlcv('BTC/USDT', timeframe='1h', limit=2)
@@ -83,13 +83,12 @@ def check_daily_limits():
         last_reset_date = now_date
         save_data()
         send_telegram(f"🌅 *يوم جديد:* تم تصفير الأهداف.\n💰 رصيد البداية: `{daily_start_balance:.2f}$` ")
-
     pnl_pct = (wallet_balance - daily_start_balance) / daily_start_balance
-    if pnl_pct >= 0.10: return False, "✅ تم تحقيق الربح اليومي المستهدف (+10%)"
+    if pnl_pct >= 0.10: return False, "✅ تم تحقيق الهدف اليومي (+10%)"
     if pnl_pct <= -0.03: return False, "🛑 تم بلوغ حد الخسارة اليومي (-3%)"
     return True, ""
 
-# --- 4. محرك التحليل (Scoring) ---
+# --- 4. محرك التحليل ---
 def get_breakout_score(symbol):
     try:
         bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=60)
@@ -107,7 +106,7 @@ def get_breakout_score(symbol):
         return score, cp
     except: return 0, 0
 
-# --- 5. أنظمة المراقبة والتنبيه الذاتي ---
+# --- 5. أنظمة المراقبة ومنع النوم ---
 def monitor_thread():
     global wallet_balance
     while True:
@@ -138,18 +137,20 @@ def monitor_thread():
         except: time.sleep(5)
 
 def self_ping_thread():
-    """هذه الدالة تبقي السيرفر مستيقظاً بزيارة نفسه كل 10 دقائق"""
+    """✅ تعديل هام: التنبيه كل 5 دقائق لمنع رندر من النوم"""
     while True:
         try:
             url = f"https://{APP_URL}" if not APP_URL.startswith("http") else APP_URL
             requests.get(url, timeout=15)
+            # طباعة في سجل السيرفر للتأكد
+            print(f"💓 Heartbeat sent to {url} at {datetime.now()}")
         except: pass
-        time.sleep(600)
+        time.sleep(300) # 5 دقائق فقط
 
-# --- 6. المحرك الرئيسي (وضع القناص) ---
+# --- 6. المحرك الرئيسي ---
 def main_engine():
-    send_telegram("🛡️ *Sniper v240.0 Online*\nوضع القناص والتنبيه الذاتي مفعلان.")
-    last_scan = datetime.now() - timedelta(minutes=10)
+    send_telegram("🛡️ *Sniper v250.0 Online*\nالمسح: كل 15د | منع النوم: مفعل (كل 5د).")
+    last_scan = datetime.now() - timedelta(minutes=20)
     while True:
         try:
             is_safe, msg_limit = check_daily_limits()
@@ -172,13 +173,11 @@ def main_engine():
                     res_sorted = sorted([r for r in raw_res if r['d'][0] > 0], key=lambda x: x['d'][0], reverse=True)
 
                 if res_sorted:
-                    # تقرير المسح
-                    scan_rep = "🔍 *نتائج مسح السوق:*\n"
+                    scan_rep = "🔍 *نتائج مسح الـ 15 دقيقة:*\n"
                     for i, r in enumerate(res_sorted[:5]):
                         scan_rep += f"{i+1}. `{r['s']}` ➟ `{r['d'][0]}/20` \n"
                     send_telegram(scan_rep)
 
-                    # اقتناص المركز الأول
                     best = res_sorted[0]
                     if best['d'][0] >= 12 and best['s'] not in active_trades and len(active_trades) < MAX_TRADES:
                         active_trades[best['s']] = {'entry': best['d'][1], 'highest_price': best['d'][1],
@@ -194,12 +193,11 @@ def main_engine():
 # --- 7. التشغيل ---
 app = Flask('')
 @app.route('/')
-def home(): return "Mouldi Sniper v240.0 is Active"
+def home(): return "Bot is Alive"
 
 if __name__ == "__main__":
-    # تشغيل كافة الخيوط بالتوازي
     Thread(target=lambda: app.run(host='0.0.0.0', port=5000)).start()
     Thread(target=monitor_thread).start()
-    Thread(target=self_ping_thread).start()
+    Thread(target=self_ping_thread).start() # تشغيل منع النوم
     Thread(target=lambda: (time.sleep(3600), send_telegram(f"📊 *تقرير الساعة:* `{wallet_balance:.2f}$`"))).start()
     main_engine()
