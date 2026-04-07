@@ -9,22 +9,22 @@ from threading import Thread
 import requests
 from concurrent.futures import ThreadPoolExecutor
 
-# --- 1. الإعدادات المتقدمة (v4.4.0) ---
+# --- 1. الإعدادات (v4.6.1 - أهداف ثابتة معدلة) ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "-1003692815602"]
-DATA_FILE = "gold_trader_v440.json"
-RENDER_URL = "https://your-app-name.onrender.com" # استبدله برابط تطبيقك في Render
+DATA_FILE = "gold_trader_v461.json"
+RENDER_URL = "https://your-app-name.onrender.com" 
 
 exchange = ccxt.binance({'enableRateLimit': True})
-TF_FAST = '1m'    # للسرعة
-TF_SLOW = '15m'   # للجودة
+TF_FAST = '1m'
+TF_SLOW = '15m'
 
 SCAN_INTERVAL = 30 
 MAX_VIRTUAL_TRADES = 5
-# إعدادات تتبع الأرباح (Trailing Settings)
-ACTIVATION_PCT = 0.015  # تفعيل التتبع بعد ربح 1.5%
-CALLBACK_PCT = 0.006    # الخروج إذا هبط السعر 0.6% من القمة المحققة
-STOP_LOSS_PCT = 0.012   # وقف خسارة ثابت 1.2% لحماية الحساب
+
+# --- الأهداف المطلوبة ---
+STOP_LOSS_PCT = 0.04    # وقف خسارة ثابت -4%
+TAKE_PROFIT_PCT = 0.08  # جني أرباح ثابت +8%
 
 STABLE_COINS = ['USDC', 'FDUSD', 'TUSD', 'BUSD', 'DAI', 'EUR', 'GBP', 'PAXG', 'AEUR', 'USDP', 'USDT']
 
@@ -59,7 +59,7 @@ def send_telegram(msg):
                            json={"chat_id": cid, "text": msg, "parse_mode": "Markdown"}, timeout=5)
         except: pass
 
-# --- 3. الأنظمة المساعدة (Keep-Alive & Market Shield) ---
+# --- 3. نظام اليقظة وحماية السوق ---
 def keep_alive_ping():
     while True:
         try: requests.get(RENDER_URL, timeout=10)
@@ -67,40 +67,35 @@ def keep_alive_ping():
         time.sleep(300)
 
 def is_market_safe():
-    """فلتر البيتكوين المعدل للموازنة بين الفرص والأمان"""
     try:
         bars = exchange.fetch_ohlcv('BTC/USDT', timeframe='15m', limit=2)
         df = pd.DataFrame(bars, columns=['t','o','h','l','c','v'])
         btc_change = ((df['c'].iloc[-1] - df['o'].iloc[-1]) / df['o'].iloc[-1]) * 100
-        # يسمح بالعمل طالما البيتكوين لم يهبط بأكثر من 1.2% في آخر 15 دقيقة
-        return btc_change > -1.2
+        return btc_change > -1.2 
     except: return True
 
-# --- 4. محرك التحليل (السرعة + الجودة) ---
+# --- 4. محرك التحليل ---
 def fetch_df(symbol, tf, limit=50):
     bars = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=limit)
     return pd.DataFrame(bars, columns=['t','o','h','l','c','v'])
 
 def analyze_coin(symbol):
     try:
-        # جودة: فريم 15 دقيقة (Trend)
         df_slow = fetch_df(symbol, TF_SLOW, limit=20)
         ema10 = df_slow['c'].ewm(span=10).mean().iloc[-1]
         if df_slow['c'].iloc[-1] < ema10: return None
 
-        # سرعة: فريم 1 دقيقة (Explosion)
         df_fast = fetch_df(symbol, TF_FAST, limit=20)
         avg_vol = df_fast['v'].tail(10).mean()
         current_vol = df_fast['v'].iloc[-1]
         
-        # شرط الانفجار: فوليوم > 2.5 ضعف المتوسط + صعود لحظي
         if current_vol > (avg_vol * 2.5):
             price_jump = ((df_fast['c'].iloc[-1] - df_fast['c'].iloc[-2]) / df_fast['c'].iloc[-2]) * 100
             if price_jump > 0.2:
-                return {'symbol': symbol, 'price': df_fast['c'].iloc[-1], 'score': price_jump}
+                return {'symbol': symbol, 'price': df_fast['c'].iloc[-1]}
     except: return None
 
-# --- 5. نظام تتبع السعر (Trailing Logic) ---
+# --- 5. مراقبة الصفقات بالأهداف الجديدة ---
 def monitor_trades():
     global virtual_balance, daily_pnl_usd
     while True:
@@ -110,35 +105,24 @@ def monitor_trades():
                 ticker = exchange.fetch_ticker(s)
                 cp = ticker['last']
                 
-                # تحديث أعلى سعر وصل له السعر منذ فتح الصفقة
-                if cp > trade.get('highest_price', 0):
-                    virtual_trades[s]['highest_price'] = cp
-                
                 entry_p = trade['entry']
-                highest_p = virtual_trades[s]['highest_price']
-                
                 gain = (cp - entry_p) / entry_p
-                drawdown_from_peak = (highest_p - cp) / highest_p
                 
                 exit_now = False
                 reason = ""
 
-                # 1. تتبع الأرباح (Trailing Stop)
-                if gain >= ACTIVATION_PCT:
-                    if drawdown_from_peak >= CALLBACK_PCT:
-                        exit_now = True
-                        reason = f"Trailing Stop (Profit: {gain*100:.2f}%)"
-                
-                # 2. وقف الخسارة الثابت (Stop Loss)
+                if gain >= TAKE_PROFIT_PCT:
+                    exit_now = True
+                    reason = "Target Reached (+8%)"
                 elif gain <= -STOP_LOSS_PCT:
                     exit_now = True
-                    reason = "Fixed Stop Loss"
+                    reason = "Stop Loss Reached (-4%)"
 
                 if exit_now:
                     pnl = 100 * gain
                     virtual_balance += pnl
                     daily_pnl_usd += pnl
-                    send_telegram(f"🏁 *إغلاق ذكي:* `{s}`\n📈 النتيجة: `{gain*100:+.2f}%`\nسبب: `{reason}`")
+                    send_telegram(f"🏁 *إغلاق صفقة:* `{s}`\n📈 النتيجة: `{gain*100:+.2f}%`\nسبب: `{reason}`")
                     del virtual_trades[s]
                     save_data()
             time.sleep(10)
@@ -146,7 +130,7 @@ def monitor_trades():
 
 def radar_engine():
     global daily_pnl_usd, last_reset_date
-    send_telegram("🛰️ *الرادار v4.4.0 جاهز*\nنظام: `Trailing Take Profit` مفعل")
+    send_telegram("🚀 *تحديث v4.6.1 نشط*\nالهدف: `+8%` | الوقف: `-4%` | الرصد: `1m` ")
     
     while True:
         try:
@@ -158,29 +142,4 @@ def radar_engine():
                             key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)[:80]
 
             with ThreadPoolExecutor(max_workers=15) as executor:
-                results = list(filter(None, executor.map(analyze_coin, targets)))
-
-            for res in results:
-                if res['symbol'] not in virtual_trades and len(virtual_trades) < MAX_VIRTUAL_TRADES:
-                    virtual_trades[res['symbol']] = {
-                        'entry': res['price'], 
-                        'highest_price': res['price'],
-                        'start_timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    }
-                    save_data()
-                    send_telegram(f"⚡ *دخول استباقي:* `{res['symbol']}`\n💰 السعر: `{res['price']}`\n✅ تتبع السعر نشط")
-            
-            time.sleep(SCAN_INTERVAL)
-        except: time.sleep(20)
-
-# --- 6. التشغيل ---
-app = Flask('')
-@app.route('/')
-def home(): return "Bot v4.4.0 Running"
-
-if __name__ == "__main__":
-    load_data()
-    Thread(target=lambda: app.run(host='0.0.0.0', port=5000)).start()
-    Thread(target=monitor_trades).start()
-    Thread(target=keep_alive_ping).start()
-    radar_engine()
+                results = list(filter(None, executor.map(analyze_coin, targets
