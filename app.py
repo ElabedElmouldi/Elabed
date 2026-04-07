@@ -3,7 +3,7 @@ import pandas as pd
 import time
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask
 from threading import Thread
 import requests
@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 # --- 1. الإعدادات الأساسية ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "-1003692815602"]
-DATA_FILE = "gold_trader_v560.json"
+DATA_FILE = "gold_trader_v590.json"
 
 exchange = ccxt.binance({'enableRateLimit': True})
 TF_FAST = '1m'
@@ -25,7 +25,8 @@ TAKE_PROFIT_PCT = 0.03
 
 MAX_SCAN_LIST = 600
 CHUNK_SIZE = 150
-current_chunk_index = 0
+SCAN_INTERVAL_MINUTES = 15 # إعادة المسح الشامل كل 15 دقيقة
+
 STABLE_AND_GIANTS = ['USDC', 'FDUSD', 'TUSD', 'BUSD', 'DAI', 'USDT', 'BTC', 'ETH', 'BNB', 'SOL']
 
 # --- 2. إدارة البيانات ---
@@ -52,15 +53,14 @@ def send_telegram(msg):
     for cid in FRIENDS_IDS:
         try: requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
                            json={"chat_id": cid, "text": msg, "parse_mode": "Markdown"}, timeout=5)
-        except: pass
+    except: pass
 
-# --- 3. محرك التحليل (نظام النقاط الخمس) ---
+# --- 3. محرك التحليل ---
 def analyze_coin(symbol):
     try:
         bars = exchange.fetch_ohlcv(symbol, TF_FAST, limit=50)
         df = pd.DataFrame(bars, columns=['t','o','h','l','c','v'])
         
-        # حساب المؤشرات السريعة
         df['ema'] = df['c'].ewm(span=10).mean()
         delta = df['c'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
@@ -70,74 +70,73 @@ def analyze_coin(symbol):
         score = 0
         curr = df['c'].iloc[-1]
         
-        # الاستراتيجيات الخمس (القوائم)
-        if curr > df['ema'].iloc[-1]: score += 1 # 1. قائمة الاتجاه
-        if df['v'].iloc[-1] > (df['v'].tail(10).mean() * 2.5): score += 1 # 2. قائمة السيولة
-        if 45 <= rsi.iloc[-1] <= 75: score += 1 # 3. قائمة الزخم (RSI)
-        if ((curr - df['c'].iloc[-2])/df['c'].iloc[-2])*100 >= 0.4: score += 1 # 4. قائمة القفزة السعرية
-        if curr > df['h'].tail(5).max() * 0.995: score += 1 # 5. قائمة الاختراق القريب
+        if curr > df['ema'].iloc[-1]: score += 1                
+        if df['v'].iloc[-1] > (df['v'].tail(10).mean() * 2.5): score += 1 
+        if 50 <= rsi.iloc[-1] <= 75: score += 1                 
+        if ((curr - df['c'].iloc[-2])/df['c'].iloc[-2])*100 >= 0.45: score += 1 
+        if curr > df['h'].tail(5).max() * 0.997: score += 1     
 
         return {'symbol': symbol, 'price': curr, 'score': score}
     except: return None
 
-# --- 4. رادار المسح المطور ---
+# --- 4. رادار المسح الدوري (كل 15 دقيقة) ---
 def radar_engine():
-    global current_chunk_index, virtual_balance
-    send_telegram("📡 *تم تشغيل نظام القوائم الثلاث v5.6.0*")
+    global virtual_balance
+    send_telegram(f"🕒 *نظام المسح الشامل مفعل*\nإعادة المسح لـ 600 عملة كل {SCAN_INTERVAL_MINUTES} دقيقة.")
     
     while True:
+        cycle_start = datetime.now()
+        
         try:
+            # جلب وتصفية القائمة الكاملة (600 عملة)
             tickers = exchange.fetch_tickers()
             all_targets = [s for s in tickers if s.endswith('/USDT') and s.split('/')[0] not in STABLE_AND_GIANTS]
             sorted_targets = sorted(all_targets, key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)[:MAX_SCAN_LIST]
             
+            # تقسيم إلى 4 مجموعات
             chunks = [sorted_targets[i:i + CHUNK_SIZE] for i in range(0, len(sorted_targets), CHUNK_SIZE)]
-            if not chunks: continue
-            if current_chunk_index >= len(chunks): current_chunk_index = 0
             
-            with ThreadPoolExecutor(max_workers=15) as executor:
-                results = list(filter(None, executor.map(analyze_coin, chunks[current_chunk_index])))
+            all_results = []
+            for i, chunk in enumerate(chunks):
+                with ThreadPoolExecutor(max_workers=15) as executor:
+                    batch_results = list(filter(None, executor.map(analyze_coin, chunk)))
+                    all_results.extend(batch_results)
+                time.sleep(2) # فاصل تقني بسيط بين المجموعات
 
-            # 1. استخراج أفضل 10 عملات في المسح (حسب الـ Score)
-            top_10 = sorted(results, key=lambda x: x['score'], reverse=True)[:10]
-            
-            top_msg = f"🏆 *أفضل 10 عملات في المسح ({current_chunk_index+1}/4)*\n"
-            for i, res in enumerate(top_10):
-                top_msg += f"{i+1}. `{res['symbol']}` | النقاط: `{res['score']}/5`\n"
-            send_telegram(top_msg)
+            # فلترة النتائج القوية فقط (4 و 5 قوائم)
+            list_5 = [r for r in all_results if r['score'] == 5]
+            list_4 = [r for r in all_results if r['score'] == 4]
 
-            # 2. فلترة العملات التي حققت 3 قوائم على الأقل للدخول
-            qualified_entries = [r for r in results if r['score'] >= 3]
-            
-            entry_summary = "📝 *عملات حققت شرط الدخول (3+ قوائم):*\n"
-            if not qualified_entries: entry_summary += "_لا توجد عملات مطابقة حالياً_"
-            else:
-                for res in qualified_entries:
-                    entry_summary += f"• `{res['symbol']}` ({res['score']} قوائم)\n"
-                    
-                    # تنفيذ الدخول الفعلي
-                    if res['symbol'] not in virtual_trades and len(virtual_trades) < MAX_VIRTUAL_TRADES:
-                        if virtual_balance >= TRADE_AMOUNT_USD:
-                            now = datetime.now()
+            # إرسال إشعار فقط إذا وجدت عملات في 4 أو 5 قوائم
+            if list_5 or list_4:
+                msg = f"💎 *نتائج مسح النخبة (4-5 قوائم)*\n━━━━━━━━━━━━━━\n"
+                if list_5: msg += f"🔥 *5 قوائم:* `{', '.join([r['symbol'] for r in list_5])}`\n"
+                if list_4: msg += f"⚡ *4 قوائم:* `{', '.join([r['symbol'] for r in list_4])}`\n"
+                send_telegram(msg)
+
+                # تنفيذ الدخول ومنع التكرار
+                for res in (list_5 + list_4):
+                    if res['symbol'] not in virtual_trades:
+                        if len(virtual_trades) < MAX_VIRTUAL_TRADES and virtual_balance >= TRADE_AMOUNT_USD:
                             virtual_trades[res['symbol']] = {
                                 'entry': res['price'],
-                                'start_full_time': now.strftime('%Y-%m-%d %H:%M:%S'),
-                                'score_at_entry': res['score']
+                                'start_full_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                             }
                             virtual_balance -= TRADE_AMOUNT_USD
                             save_data()
-                            send_telegram(f"🚀 *دخول صفقة:* `{res['symbol']}`\n💰 السعر: `{res['price']}`\n📊 القوائم المحققة: `{res['score']}`")
+                            send_telegram(f"🚀 *دخول صفقة:* `{res['symbol']}` ({res['score']} قوائم)")
 
-            send_telegram(entry_summary)
-            send_telegram(f"✅ *تم مسح 150 عملة بنجاح*")
+            send_telegram(f"✅ تم مسح 600 عملة. الدورة القادمة بعد {SCAN_INTERVAL_MINUTES} دقيقة.")
 
-            current_chunk_index += 1
-            time.sleep(20)
         except Exception as e:
             print(f"Error: {e}")
-            time.sleep(20)
 
-# --- 5. مراقبة الصفقات (البيع) ---
+        # حساب وقت الانتظار المتبقي للوصول لـ 15 دقيقة
+        elapsed = (datetime.now() - cycle_start).total_seconds()
+        wait_time = max(1, (SCAN_INTERVAL_MINUTES * 60) - elapsed)
+        time.sleep(wait_time)
+
+# --- 5. مراقبة الصفقات ---
 def monitor_trades():
     global virtual_balance
     while True:
@@ -148,13 +147,9 @@ def monitor_trades():
                 cp = ticker['last']
                 gain = (cp - trade['entry']) / trade['entry']
                 
-                exit_now = False
                 if gain >= TAKE_PROFIT_PCT or gain <= -STOP_LOSS_PCT:
-                    exit_now = True
-
-                if exit_now:
                     virtual_balance += (TRADE_AMOUNT_USD * (1 + gain))
-                    send_telegram(f"🏁 *إغلاق:* `{s}` | النتيجة: `{gain*100:+.2f}%` \n💰 الرصيد: `{virtual_balance:.2f}$`")
+                    send_telegram(f"🏁 *إغلاق صفقة:* `{s}` | `{gain*100:+.2f}%` \n💰 الرصيد: `{virtual_balance:.2f}$`")
                     del virtual_trades[s]
                     save_data()
             time.sleep(10)
