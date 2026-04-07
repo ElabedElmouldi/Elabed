@@ -24,7 +24,7 @@ MAX_VIRTUAL_TRADES = 5
 
 # --- الأهداف المطلوبة ---
 STOP_LOSS_PCT = 0.04    # وقف خسارة ثابت -4%
-TAKE_PROFIT_PCT = 0.08  # جني أرباح ثابت +8%
+TAKE_PROFIT_PCT = 0.03  # جني أرباح ثابت +8%
 
 STABLE_COINS = ['USDC', 'FDUSD', 'TUSD', 'BUSD', 'DAI', 'EUR', 'GBP', 'PAXG', 'AEUR', 'USDP', 'USDT']
 
