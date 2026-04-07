@@ -22,7 +22,7 @@ TF_SLOW = '15m'
 # إعدادات المحفظة
 INITIAL_BALANCE = 1000.0   
 TRADE_AMOUNT_USD = 50.0    
-MAX_VIRTUAL_TRADES = 10    
+MAX_VIRTUAL_TRADES = 20    
 
 # إعدادات التتبع (تم تعطيل وقف الخسارة برمجياً بالأسفل)
 STOP_LOSS_PCT = 0.99      # تم رفعه لنسبة مستحيلة كحماية إضافية
