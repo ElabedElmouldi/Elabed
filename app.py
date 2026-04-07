@@ -1,4 +1,4 @@
-عimport ccxt
+import ccxt
 import pandas as pd
 import time
 import json
@@ -9,7 +9,7 @@ from threading import Thread
 import requests
 from concurrent.futures import ThreadPoolExecutor
 
-# --- 1. الإعدادات الأساسية (v4.9.6 - إصلاح أخطاء الصيغة) ---
+# --- 1. الإعدادات الأساسية (v4.9.6 - نسخة بدون وقف خسارة) ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "-1003692815602"]
 DATA_FILE = "gold_trader_v496.json"
@@ -24,10 +24,10 @@ INITIAL_BALANCE = 1000.0
 TRADE_AMOUNT_USD = 50.0    
 MAX_VIRTUAL_TRADES = 10    
 
-# إعدادات التتبع
-STOP_LOSS_PCT = 0.02      
-ACTIVATION_PCT = 0.03    
-CALLBACK_PCT = 0.02      
+# إعدادات التتبع (تم تعطيل وقف الخسارة برمجياً بالأسفل)
+STOP_LOSS_PCT = 0.99      # تم رفعه لنسبة مستحيلة كحماية إضافية
+ACTIVATION_PCT = 0.03    # يبدأ التتبع عند ربح 3%
+CALLBACK_PCT = 0.02      # يغلق الصفقة إذا هبط السعر 2% من القمة
 
 STABLE_COINS = ['USDC', 'FDUSD', 'TUSD', 'BUSD', 'DAI', 'EUR', 'GBP', 'PAXG', 'AEUR', 'USDP', 'USDT']
 
@@ -78,7 +78,7 @@ def hourly_report_manager():
                 if not closed_list: closed_list = "_لم تُغلق صفقات_"
                 
                 report = (
-                    "📊 *تقرير الساعة المنقضية*\n"
+                    "📊 *تقرير الساعة (بدون وقف خسارة)*\n"
                     "━━━━━━━━━━━━━━\n"
                     f"💰 *المحفظة:* `{virtual_balance:.2f} USD`\n"
                     f"📂 *المفتوحة:*\n{open_list}\n"
@@ -106,7 +106,7 @@ def analyze_coin(symbol):
             if jump > 0.2: return {'symbol': symbol, 'price': df_fast['c'].iloc[-1]}
     except: return None
 
-# --- 5. مراقبة الصفقات (كل 10 ثواني) ---
+# --- 5. مراقبة الصفقات (بدون وقف خسارة) ---
 def monitor_trades():
     global virtual_balance, closed_this_hour
     while True:
@@ -127,13 +127,12 @@ def monitor_trades():
                 exit_now = False
                 reason = ""
 
-                if gain <= -STOP_LOSS_PCT:
-                    exit_now = True
-                    reason = "Stop Loss (-2%)"
-                elif gain >= ACTIVATION_PCT or (highest_p/entry_p - 1) >= ACTIVATION_PCT:
+                # تم حذف شرط الـ Stop Loss نهائياً من هنا
+                # الخروج فقط عند تحقق ربح وتراجع السعر (Trailing Exit)
+                if gain >= ACTIVATION_PCT or (highest_p/entry_p - 1) >= ACTIVATION_PCT:
                     if drawdown >= CALLBACK_PCT:
                         exit_now = True
-                        reason = f"Trailing Exit ({gain*100:+.2f}%)"
+                        reason = f"Trailing Profit ({gain*100:+.2f}%)"
 
                 if exit_now:
                     pnl_usd = TRADE_AMOUNT_USD * gain
@@ -141,20 +140,22 @@ def monitor_trades():
                     closed_this_hour.append({'symbol': s, 'pnl_pct': gain*100, 'pnl_usd': pnl_usd})
                     
                     msg = (
-                        f"🏁 *إشعار خروج*\n"
+                        f"🏁 *إغلاق بربح*\n"
                         f"🪙 العملة: `{s}`\n"
                         f"📈 النتيجة: `{gain*100:+.2f}%`\n"
                         f"💵 الربح: `{pnl_usd:+.2f} USD`\n"
-                        f"سبب: `{reason}`"
+                        f"السبب: `{reason}`"
                     )
                     send_telegram(msg)
                     del virtual_trades[s]
                     save_data()
             time.sleep(10)
-        except: time.sleep(5)
+        except Exception as e: 
+            print(f"Error in monitor: {e}")
+            time.sleep(5)
 
 def radar_engine():
-    send_telegram(f"🚀 *v4.9.6 نشط*\nالمحفظة: `{virtual_balance}$` | الصفقة: `50$`")
+    send_telegram(f"🚀 *v4.9.6 نشط (بدون وقف خسارة)*\nالمحفظة: `{virtual_balance}$` | الصفقة: `50$`")
     while True:
         try:
             tickers = exchange.fetch_tickers()
@@ -180,11 +181,14 @@ def radar_engine():
 # --- 6. التشغيل ---
 app = Flask('')
 @app.route('/')
-def home(): return f"Active Trades: {len(virtual_trades)}"
+def home(): return f"Active Trades: {len(virtual_trades)} | Balance: {virtual_balance}"
 
 if __name__ == "__main__":
     load_data()
+    # تشغيل Flask في خيط منفصل
     Thread(target=lambda: app.run(host='0.0.0.0', port=5000)).start()
+    # تشغيل خيوط المراقبة والتقارير
     Thread(target=monitor_trades).start()
     Thread(target=hourly_report_manager).start()
+    # تشغيل المحرك الرئيسي
     radar_engine()
