@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "-1003692815602"]
 DATA_FILE = "gold_trader_v422.json"
-RENDER_URL = "https://your-app-name.onrender.com" # <--- ضع رابط السيرفر الخاص بك هنا
+RENDER_URL = "https://elabed.onrender.com" # <--- ضع رابط السيرفر الخاص بك هنا
 
 exchange = ccxt.binance({'enableRateLimit': True})
 TF_FAST = '1m'
