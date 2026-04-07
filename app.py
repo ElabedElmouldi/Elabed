@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 # --- 1. الإعدادات الأساسية ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
-FRIENDS_IDS = ["5067771509", "2107567005"]
+FRIENDS_IDS = ["5067771509", "-1003692815602"]
 exchange = ccxt.binance({'enableRateLimit': True})
 
 app = Flask(__name__)
