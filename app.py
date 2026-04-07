@@ -9,39 +9,45 @@ from threading import Thread
 import requests
 from concurrent.futures import ThreadPoolExecutor
 
-# --- 1. الإعدادات ---
+# --- 1. الإعدادات العامة ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "2107567005"]
-DATA_FILE = "virtual_v350.json"
+DATA_FILE = "trading_sim_v400.json"
 APP_URL = "your-app-name.onrender.com" 
 
 exchange = ccxt.binance({'enableRateLimit': True})
 
-SCAN_INTERVAL = 900 
-MAX_VIRTUAL_TRADES = 5 
+SCAN_INTERVAL = 900 # 15 دقيقة
+DAILY_GOAL_PCT = 3.0 # الهدف اليومي الجديد
+MAX_VIRTUAL_TRADES = 5
 STABLE_COINS = ['USDC', 'FDUSD', 'TUSD', 'BUSD', 'DAI', 'EUR', 'GBP', 'PAXG', 'AEUR', 'USDP', 'USDT']
 
 # --- 2. إدارة البيانات ---
 virtual_trades = {}
 virtual_balance = 1000.0
+daily_pnl_usd = 0.0
+last_reset_date = str(datetime.now().date())
 
-def load_v_data():
-    global virtual_balance, virtual_trades
+def load_data():
+    global virtual_balance, virtual_trades, daily_pnl_usd, last_reset_date
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, 'r') as f:
                 data = json.load(f)
                 virtual_balance = data.get('virtual_balance', 1000.0)
                 virtual_trades = data.get('virtual_trades', {})
+                daily_pnl_usd = data.get('daily_pnl_usd', 0.0)
+                last_reset_date = data.get('last_reset_date', str(datetime.now().date()))
         except: pass
 
-def save_v_data():
+def save_data():
     try:
-        data = {'virtual_balance': virtual_balance, 'virtual_trades': virtual_trades}
+        data = {
+            'virtual_balance': virtual_balance, 'virtual_trades': virtual_trades,
+            'daily_pnl_usd': daily_pnl_usd, 'last_reset_date': last_reset_date
+        }
         with open(DATA_FILE, 'w') as f: json.dump(data, f)
     except: pass
-
-load_v_data()
 
 def send_telegram(msg):
     for cid in FRIENDS_IDS:
@@ -49,49 +55,45 @@ def send_telegram(msg):
                            json={"chat_id": cid, "text": msg, "parse_mode": "Markdown"}, timeout=10)
         except: pass
 
-# --- 3. نظام التكيف مع السوق (Dynamic Logic) ---
-def get_market_strategy():
-    """تحديد حالة السوق وتغيير قوانين اللعبة آلياً"""
-    try:
-        btc_bars = exchange.fetch_ohlcv('BTC/USDT', timeframe='1h', limit=2)
-        change = (btc_bars[-1][4] - btc_bars[-2][4]) / btc_bars[-2][4]
-        
-        if change < -0.01: # سوق هابط (غير آمن)
-            return {
-                'status': "🚨 UNSAFE",
-                'sl': 0.012,      # وقف خسارة ضيق جداً (1.2%)
-                'act': 0.02,      # تنشيط التتبع مبكراً (2%)
-                'gap': 0.008,     # ملاحقة قريبة جداً (0.8%)
-                'min_score': 16   # لا يدخل إلا في "الأسود" فقط
-            }
-        else: # سوق مستقر (آمن)
-            return {
-                'status': "✅ SAFE",
-                'sl': 0.02,       # وقف خسارة عادي (2%)
-                'act': 0.04,      # تنشيط التتبع عند (4%)
-                'gap': 0.02,      # ملاحقة عادية (2%)
-                'min_score': 12   # دخول مرن
-            }
-    except:
-        return {'status': "✅ SAFE", 'sl': 0.02, 'act': 0.04, 'gap': 0.02, 'min_score': 12}
+# --- 3. الاستراتيجيات الثلاث (حساب السكور) ---
+
+def get_momentum_score(df):
+    rvol = df['v'].iloc[-1] / df['v'].tail(20).mean()
+    change = ((df['c'].iloc[-1] - df['o'].iloc[-1]) / df['o'].iloc[-1]) * 100
+    return round((rvol * 6) + (change * 3), 2)
+
+def get_breakout_score(df):
+    high_24h = df['h'].tail(96).max()
+    cp = df['c'].iloc[-1]
+    score = (cp / high_24h) * 10
+    if cp >= high_24h: score += 10
+    return round(score, 2)
+
+def get_trend_score(df):
+    ema20 = df['c'].ewm(span=20).mean().iloc[-1]
+    cp = df['c'].iloc[-1]
+    delta = df['c'].diff()
+    up = delta.clip(lower=0).rolling(14).mean()
+    down = -delta.clip(upper=0).rolling(14).mean()
+    rsi = 100 - (100 / (1 + (up / down))).iloc[-1]
+    score = (10 if cp > ema20 else 0) + (rsi / 10)
+    return round(score, 2)
 
 # --- 4. محرك التحليل والمراقبة ---
-def get_signal_score(symbol):
-    try:
-        bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=50)
-        df = pd.DataFrame(bars, columns=['t','o','h','l','c','v'])
-        cp = df['c'].iloc[-1]
-        rvol = df['v'].iloc[-1] / df['v'].tail(20).mean()
-        
-        score = 0
-        if cp > df['c'].ewm(span=20).mean().iloc[-1]: score += 4
-        if cp > df['h'].iloc[-2]: score += 4
-        if rvol > 1.8: score += 12 
-        return score, cp
-    except: return 0, 0
 
-def virtual_monitor():
-    global virtual_balance
+def analyze_coin(symbol):
+    try:
+        bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=100)
+        df = pd.DataFrame(bars, columns=['t','o','h','l','c','v'])
+        return {
+            'symbol': symbol, 's1': get_momentum_score(df),
+            's2': get_breakout_score(df), 's3': get_trend_score(df),
+            'price': df['c'].iloc[-1]
+        }
+    except: return None
+
+def monitor_trades():
+    global virtual_balance, daily_pnl_usd
     while True:
         try:
             for s in list(virtual_trades.keys()):
@@ -100,88 +102,88 @@ def virtual_monitor():
                 
                 if cp > trade.get('highest_price', 0):
                     virtual_trades[s]['highest_price'] = cp
-                    # تنشيط التتبع بناءً على الاستراتيجية التي دخل بها
-                    gain_now = (cp - trade['entry']) / trade['entry']
-                    if not trade.get('tr_act', False) and gain_now >= trade['strategy']['act']:
-                        virtual_trades[s]['tr_act'] = True
-                        send_telegram(f"🛡️ *تأمين ربح افتراضي:* `{s}`\nتم تفعيل ملاحقة السعر.")
-
-                highest = virtual_trades[s]['highest_price']
-                gain = (cp - trade['entry']) / trade['entry']
-                drop_from_top = (highest - cp) / highest
                 
-                # قوانين الخروج المرنة
+                gain = (cp - trade['entry']) / trade['entry']
+                drop = (virtual_trades[s]['highest_price'] - cp) / virtual_trades[s]['highest_price']
+                
+                # إعدادات الخروج (تتكيف مع السوق)
                 exit_now = False
-                reason = ""
-                if trade.get('tr_act', False) and drop_from_top >= trade['strategy']['gap']:
-                    exit_now = True; reason = "💰 جني أرباح (ملاحقة)"
-                elif not trade.get('tr_act', False) and gain <= -trade['strategy']['sl']:
-                    exit_now = True; reason = "❌ وقف خسارة"
-
+                if gain <= -0.015: exit_now = True # وقف خسارة 1.5%
+                elif gain >= 0.03 and drop >= 0.01: exit_now = True # ملاحقة ربح
+                
                 if exit_now:
                     pnl = 100 * gain
                     virtual_balance += pnl
-                    send_telegram(f"🏁 *إغلاق صفقة افتراضية:*\nالعملة: `{s}`\nالسبب: {reason}\nالنتيجة: `{gain*100:+.2f}%`\nالرصيد الوهمي: `{virtual_balance:.2f}$` ")
-                    del virtual_trades[s]; save_v_data()
-            time.sleep(20)
+                    daily_pnl_usd += pnl
+                    daily_pct = (daily_pnl_usd / virtual_balance) * 100
+                    icon = "✅" if gain > 0 else "❌"
+                    send_telegram(f"{icon} *إغلاق افتراضي:* `{s}`\nالربح: `{gain*100:+.2f}%`\nأداء اليوم: `{daily_pct:.2f}% / {DAILY_GOAL_PCT}%`")
+                    del virtual_trades[s]; save_data()
+            time.sleep(15)
         except: time.sleep(10)
 
 def radar_engine():
-    send_telegram("🦎 *تم تشغيل القناص المتكيف (v350.0)*\nوضع المحاكاة: سأقوم بتغيير استراتيجيتي حسب حالة السوق.")
-    last_scan = datetime.now() - timedelta(seconds=SCAN_INTERVAL)
+    global daily_pnl_usd, last_reset_date
+    send_telegram(f"🌟 *نظام الإجماع الذهبي (v400) متصل*\nالهدف اليومي: `{DAILY_GOAL_PCT}%` | الفلترة: `Top 10`")
     
     while True:
         try:
             now = datetime.now()
-            if now >= last_scan + timedelta(seconds=SCAN_INTERVAL):
-                # 1. فحص حالة السوق وتحديث الاستراتيجية
-                strategy = get_market_strategy()
-                send_telegram(f"🔍 *بدء المسح الدوري*\nحالة السوق: `{strategy['status']}`\nالهدف المفعّل: سكور `{strategy['min_score']}+`")
+            # تصفير اليومي
+            if last_reset_date != str(now.date()):
+                daily_pnl_usd = 0.0; last_reset_date = str(now.date()); save_data()
+                send_telegram("📅 *بداية يوم جديد:* تم تصفير عداد الأرباح.")
 
-                # 2. جلب العملات والتحليل
-                tickers = exchange.fetch_tickers()
-                all_usdt = [s for s in tickers if s.endswith('/USDT') and s.split('/')[0] not in STABLE_COINS]
-                targets = sorted(all_usdt, key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)[:150]
+            tickers = exchange.fetch_tickers()
+            all_usdt = [s for s in tickers if s.endswith('/USDT') and s.split('/')[0] not in STABLE_COINS]
+            targets = sorted(all_usdt, key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)[:150]
 
-                with ThreadPoolExecutor(max_workers=10) as executor:
-                    raw_res = list(executor.map(lambda s: {'s': s, 'd': get_signal_score(s)}, targets))
-                    res_sorted = sorted([r for r in raw_res if r['d'][0] >= 10], key=lambda x: x['d'][0], reverse=True)
+            with ThreadPoolExecutor(max_workers=15) as executor:
+                results = list(filter(None, executor.map(analyze_coin, targets)))
 
-                if res_sorted:
-                    report = "📋 *أفضل العملات المرصودة:*\n"
-                    for r in res_sorted[:3]: report += f"• `{r['s']}` ➟ سكور: `{r['d'][0]}/20` \n"
-                    send_telegram(report)
+            # استخراج أفضل 10 لكل استراتيجية
+            m_list = sorted(results, key=lambda x: x['s1'], reverse=True)[:10]
+            b_list = sorted(results, key=lambda x: x['s2'], reverse=True)[:10]
+            t_list = sorted(results, key=lambda x: x['s3'], reverse=True)[:10]
 
-                    # 3. اتخاذ قرار الدخول الافتراضي
-                    best = res_sorted[0]
-                    if best['d'][0] >= strategy['min_score'] and best['s'] not in virtual_trades and len(virtual_trades) < MAX_VIRTUAL_TRADES:
-                        virtual_trades[best['s']] = {
-                            'entry': best['d'][1],
-                            'highest_price': best['d'][1],
-                            'tr_act': False,
-                            'strategy': strategy # تخزين القوانين الخاصة بهذه الصفقة
+            m_set = {r['symbol'] for r in m_list}
+            b_set = {r['symbol'] for r in b_list}
+            t_set = {r['symbol'] for r in t_list}
+
+            # الإجماع (العملات الموجودة في الـ 3 قوائم)
+            golden_ones = m_set.intersection(b_set).intersection(t_set)
+
+            # إرسال تقرير القوائم
+            msg = "📋 *أعلى 5 عملات حالياً:*\n"
+            msg += "🚀 *السيولة:* " + ", ".join([r['symbol'].replace('/USDT','') for r in m_list[:5]]) + "\n"
+            msg += "📈 *الاختراق:* " + ", ".join([r['symbol'].replace('/USDT','') for r in b_list[:5]]) + "\n"
+            msg += "💎 *الاتجاه:* " + ", ".join([r['symbol'].replace('/USDT','') for r in t_list[:5]])
+
+            if golden_ones:
+                msg += "\n\n🌟 *إجماع ذهبي مرصود:* " + ", ".join([f"`{s}`" for s in golden_ones])
+                for sym in golden_ones:
+                    if sym not in virtual_trades and len(virtual_trades) < MAX_VIRTUAL_TRADES:
+                        c_data = next(r for r in results if r['symbol'] == sym)
+                        total_score = c_data['s1'] + c_data['s2'] + c_data['s3']
+                        virtual_trades[sym] = {
+                            'entry': c_data['price'], 'highest_price': c_data['price'],
+                            'score': total_score, 'strategy': 'Golden Consensus'
                         }
-                        save_v_data()
-                        msg = "🔥 *اقتناص متمرد (عكس السوق):*" if strategy['status'] != "✅ SAFE" else "🎯 *دخول افتراضي جديد:*"
-                        send_telegram(f"{msg}\nالعملة: `{best['s']}`\nالسعر: `{best['d'][1]}`\nالوقف: `{strategy['sl']*100}%` | التتبع: `{strategy['act']*100}%` ")
-                
-                last_scan = now
-            time.sleep(30)
-        except: time.sleep(10)
+                        save_data()
+                        send_telegram(f"🚀 *دخول افتراضي:* `{sym}`\nالسكور الذهبي: `{total_score:.2f}`")
+            
+            send_telegram(msg)
+            time.sleep(900)
+        except Exception as e:
+            print(f"Error: {e}"); time.sleep(30)
 
 # --- 5. التشغيل ---
 app = Flask('')
 @app.route('/')
-def home(): return "Chameleon Simulator Active"
-
-def self_ping():
-    while True:
-        try: requests.get(f"https://{APP_URL}", timeout=10)
-        except: pass
-        time.sleep(300)
+def home(): return "Gold System Active"
 
 if __name__ == "__main__":
+    load_data()
     Thread(target=lambda: app.run(host='0.0.0.0', port=5000)).start()
-    Thread(target=virtual_monitor).start()
-    Thread(target=self_ping).start()
+    Thread(target=monitor_trades).start()
     radar_engine()
