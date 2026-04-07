@@ -9,47 +9,50 @@ from threading import Thread
 import requests
 from concurrent.futures import ThreadPoolExecutor
 
-# --- 1. الإعدادات الأساسية (v4.9.6 - نسخة بدون وقف خسارة) ---
+# --- 1. الإعدادات الأساسية (v4.9.8 - تقرير ساعي + يومي) ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "-1003692815602"]
-DATA_FILE = "gold_trader_v496.json"
-RENDER_URL = "https://elabed.onrender.com" 
+DATA_FILE = "gold_trader_v498.json"
 
 exchange = ccxt.binance({'enableRateLimit': True})
 TF_FAST = '1m'
 TF_SLOW = '15m'
 
-# إعدادات المحفظة
 INITIAL_BALANCE = 1000.0   
 TRADE_AMOUNT_USD = 50.0    
-MAX_VIRTUAL_TRADES = 20    
+MAX_VIRTUAL_TRADES = 10    
 
-# إعدادات التتبع (تم تعطيل وقف الخسارة برمجياً بالأسفل)
-STOP_LOSS_PCT = 0.99      # تم رفعه لنسبة مستحيلة كحماية إضافية
-ACTIVATION_PCT = 0.03    # يبدأ التتبع عند ربح 3%
-CALLBACK_PCT = 0.02      # يغلق الصفقة إذا هبط السعر 2% من القمة
+# إعدادات التتبع
+ACTIVATION_PCT = 0.03    
+CALLBACK_PCT = 0.02      
 
 STABLE_COINS = ['USDC', 'FDUSD', 'TUSD', 'BUSD', 'DAI', 'EUR', 'GBP', 'PAXG', 'AEUR', 'USDP', 'USDT']
 
 # --- 2. إدارة البيانات ---
 virtual_trades = {}
 virtual_balance = INITIAL_BALANCE
-closed_this_hour = [] 
+daily_stats = {"wins": 0, "total_pnl_usd": 0.0, "trades_count": 0} # بيانات التقرير اليومي
 last_report_time = datetime.now()
+last_daily_report_day = datetime.now().day
 
 def load_data():
-    global virtual_balance, virtual_trades
+    global virtual_balance, virtual_trades, daily_stats
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, 'r') as f:
                 data = json.load(f)
                 virtual_balance = data.get('virtual_balance', INITIAL_BALANCE)
                 virtual_trades = data.get('virtual_trades', {})
+                daily_stats = data.get('daily_stats', {"wins": 0, "total_pnl_usd": 0.0, "trades_count": 0})
         except: pass
 
 def save_data():
     try:
-        data = {'virtual_balance': virtual_balance, 'virtual_trades': virtual_trades}
+        data = {
+            'virtual_balance': virtual_balance, 
+            'virtual_trades': virtual_trades,
+            'daily_stats': daily_stats
+        }
         with open(DATA_FILE, 'w') as f: json.dump(data, f)
     except: pass
 
@@ -60,36 +63,44 @@ def send_telegram(msg):
                            json={"chat_id": cid, "text": msg, "parse_mode": "Markdown"}, timeout=5)
         except: pass
 
-# --- 3. نظام التقارير الساعية ---
-def hourly_report_manager():
-    global last_report_time, closed_this_hour
+# --- 3. نظام التقارير (ساعي + يومي) ---
+def report_manager():
+    global last_report_time, last_daily_report_day, daily_stats
     while True:
         try:
             now = datetime.now()
+            
+            # أ. التقرير الساعي (التفصيلي)
             if now >= last_report_time + timedelta(hours=1):
-                open_list = ""
-                for s, t in virtual_trades.items():
-                    open_list += f"• `{s}` (دخول: `{t['entry']}`)\n"
-                if not open_list: open_list = "_لا توجد صفقات حالية_"
-
-                closed_list = ""
-                for c in closed_this_hour:
-                    closed_list += f"• `{c['symbol']}`: `{c['pnl_pct']:+.2f}%` (`{c['pnl_usd']:+.2f}$`)\n"
-                if not closed_list: closed_list = "_لم تُغلق صفقات_"
-                
-                report = (
-                    "📊 *تقرير الساعة (بدون وقف خسارة)*\n"
-                    "━━━━━━━━━━━━━━\n"
-                    f"💰 *المحفظة:* `{virtual_balance:.2f} USD`\n"
-                    f"📂 *المفتوحة:*\n{open_list}\n"
-                    f"✅ *نتائج الساعة:*\n{closed_list}\n"
-                    "━━━━━━━━━━━━━━"
-                )
+                report = "📊 *تقرير الساعة المنقضية*\n━━━━━━━━━━━━━━\n"
+                if virtual_trades:
+                    for symbol, t in virtual_trades.items():
+                        try: cp = exchange.fetch_ticker(symbol)['last']
+                        except: cp = t['entry']
+                        current_gain = ((cp - t['entry']) / t['entry']) * 100
+                        report += f"🔸 *{symbol}*: `{cp}` ({current_gain:+.2f}%)\n"
+                else: report += "_لا توجد صفقات مفتوحة_\n"
                 send_telegram(report)
                 last_report_time = now
-                closed_this_hour = []
+
+            # ب. التقرير اليومي (عند تغير اليوم أو الساعة 23:59)
+            if now.day != last_daily_report_day:
+                daily_msg = (
+                    "📅 *التقرير اليومي للملحمة*\n"
+                    "━━━━━━━━━━━━━━\n"
+                    f"💰 *الرصيد النهائي:* `{virtual_balance:.2f} USD`\n"
+                    f"📈 *صافي ربح اليوم:* `{daily_stats['total_pnl_usd']:+.2f} USD`\n"
+                    f"✅ *عدد الصفقات المنفذة:* `{daily_stats['trades_count']}`\n"
+                    f"🏆 *الرابحة منها:* `{daily_stats['wins']}`\n"
+                    "━━━━━━━━━━━━━━"
+                )
+                send_telegram(daily_msg)
+                # تصفير بيانات اليوم الجديد
+                daily_stats = {"wins": 0, "total_pnl_usd": 0.0, "trades_count": 0}
+                last_daily_report_day = now.day
                 save_data()
-        except: pass
+
+        except Exception as e: print(f"Report error: {e}")
         time.sleep(60)
 
 # --- 4. محرك التحليل ---
@@ -106,56 +117,39 @@ def analyze_coin(symbol):
             if jump > 0.2: return {'symbol': symbol, 'price': df_fast['c'].iloc[-1]}
     except: return None
 
-# --- 5. مراقبة الصفقات (بدون وقف خسارة) ---
+# --- 5. مراقبة الصفقات ---
 def monitor_trades():
-    global virtual_balance, closed_this_hour
+    global virtual_balance, daily_stats
     while True:
         try:
             for s in list(virtual_trades.keys()):
                 trade = virtual_trades[s]
-                ticker = exchange.fetch_ticker(s)
-                cp = ticker['last']
+                cp = exchange.fetch_ticker(s)['last']
                 
-                if cp > trade.get('highest_price', 0):
-                    virtual_trades[s]['highest_price'] = cp
+                if cp > trade.get('highest_price', 0): virtual_trades[s]['highest_price'] = cp
+                if cp < trade.get('lowest_price', trade['entry']): virtual_trades[s]['lowest_price'] = cp
                 
-                entry_p = trade['entry']
-                highest_p = virtual_trades[s]['highest_price']
-                gain = (cp - entry_p) / entry_p
-                drawdown = (highest_p - cp) / highest_p if highest_p > 0 else 0
+                gain = (cp - trade['entry']) / trade['entry']
+                drawdown = (trade['highest_price'] - cp) / trade['highest_price'] if trade['highest_price'] > 0 else 0
                 
-                exit_now = False
-                reason = ""
-
-                # تم حذف شرط الـ Stop Loss نهائياً من هنا
-                # الخروج فقط عند تحقق ربح وتراجع السعر (Trailing Exit)
-                if gain >= ACTIVATION_PCT or (highest_p/entry_p - 1) >= ACTIVATION_PCT:
+                if gain >= ACTIVATION_PCT or (trade['highest_price']/trade['entry'] - 1) >= ACTIVATION_PCT:
                     if drawdown >= CALLBACK_PCT:
-                        exit_now = True
-                        reason = f"Trailing Profit ({gain*100:+.2f}%)"
-
-                if exit_now:
-                    pnl_usd = TRADE_AMOUNT_USD * gain
-                    virtual_balance += pnl_usd
-                    closed_this_hour.append({'symbol': s, 'pnl_pct': gain*100, 'pnl_usd': pnl_usd})
-                    
-                    msg = (
-                        f"🏁 *إغلاق بربح*\n"
-                        f"🪙 العملة: `{s}`\n"
-                        f"📈 النتيجة: `{gain*100:+.2f}%`\n"
-                        f"💵 الربح: `{pnl_usd:+.2f} USD`\n"
-                        f"السبب: `{reason}`"
-                    )
-                    send_telegram(msg)
-                    del virtual_trades[s]
-                    save_data()
+                        pnl_usd = TRADE_AMOUNT_USD * gain
+                        virtual_balance += pnl_usd
+                        
+                        # تحديث الإحصائيات اليومية
+                        daily_stats['total_pnl_usd'] += pnl_usd
+                        daily_stats['trades_count'] += 1
+                        if pnl_usd > 0: daily_stats['wins'] += 1
+                        
+                        send_telegram(f"✅ *إغلاق صفقة: {s}*\nالربح: `{gain*100:+.2f}%` (`{pnl_usd:+.2f}$`)")
+                        del virtual_trades[s]
+                        save_data()
             time.sleep(10)
-        except Exception as e: 
-            print(f"Error in monitor: {e}")
-            time.sleep(5)
+        except: time.sleep(5)
 
 def radar_engine():
-    send_telegram(f"🚀 *v4.9.6 نشط (بدون وقف خسارة)*\nالمحفظة: `{virtual_balance}$` | الصفقة: `50$`")
+    send_telegram("🚀 *بوت الفهد v4.9.8 نشط*\n_تم إضافة التقارير اليومية_")
     while True:
         try:
             tickers = exchange.fetch_tickers()
@@ -171,24 +165,22 @@ def radar_engine():
                         virtual_trades[res['symbol']] = {
                             'entry': res['price'], 
                             'highest_price': res['price'],
-                            'start_timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            'lowest_price': res['price'],
+                            'start_time': datetime.now().strftime('%H:%M:%S')
                         }
                         save_data()
-                        send_telegram(f"⚡ *دخول:* `{res['symbol']}`\n💰 السعر: `{res['price']}`\n💵 القيمة: `50$`")
+                        send_telegram(f"⚡ *دخول:* `{res['symbol']}` بسعر `{res['price']}`")
             time.sleep(30)
         except: time.sleep(20)
 
 # --- 6. التشغيل ---
 app = Flask('')
 @app.route('/')
-def home(): return f"Active Trades: {len(virtual_trades)} | Balance: {virtual_balance}"
+def home(): return "Bot Running"
 
 if __name__ == "__main__":
     load_data()
-    # تشغيل Flask في خيط منفصل
     Thread(target=lambda: app.run(host='0.0.0.0', port=5000)).start()
-    # تشغيل خيوط المراقبة والتقارير
     Thread(target=monitor_trades).start()
-    Thread(target=hourly_report_manager).start()
-    # تشغيل المحرك الرئيسي
+    Thread(target=report_manager).start()
     radar_engine()
