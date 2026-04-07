@@ -9,12 +9,11 @@ import requests
 import os
 from concurrent.futures import ThreadPoolExecutor
 
-# --- 1. الإعدادات المحدثة ---
+# --- 1. الإعدادات ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "2107567005"]
 DATA_FILE = "bot_data.json"
-# ⚠️ هام جداً: ضع رابط Render الخاص بك هنا ليعمل نظام منع النوم
-APP_URL = "your-app-name.onrender.com" 
+APP_URL = "your-app-name.onrender.com" # ⚠️ استبدله برابطك في Render
 
 exchange = ccxt.binance({
     'apiKey': os.environ.get('BINANCE_API_KEY', ''),
@@ -25,8 +24,7 @@ exchange = ccxt.binance({
 
 MAX_TRADES = 10
 TRADE_AMOUNT_USD = 100.0
-# ✅ تم التعديل لـ 15 دقيقة (900 ثانية) بناءً على طلبك
-SCAN_INTERVAL = 900 
+SCAN_INTERVAL = 900 # 15 دقيقة
 STOP_LOSS_PCT = 0.02       
 ACTIVATION_PROFIT = 0.04   
 TRAILING_GAP = 0.02        
@@ -67,28 +65,16 @@ def send_telegram(msg):
                            json={"chat_id": cid, "text": msg, "parse_mode": "Markdown"}, timeout=10)
         except: pass
 
-# --- 3. فلاتر الأمان ---
-def is_btc_safe():
+# --- 3. فحص حالة البيتكوين ---
+def get_btc_status():
     try:
         btc_bars = exchange.fetch_ohlcv('BTC/USDT', timeframe='1h', limit=2)
         change = (btc_bars[-1][4] - btc_bars[-2][4]) / btc_bars[-2][4]
-        return change > -0.01
-    except: return True
+        # إذا هبط البيتكوين بأكثر من 1% نعتبر السوق غير آمن
+        return "UNSAFE" if change < -0.01 else "SAFE"
+    except: return "SAFE"
 
-def check_daily_limits():
-    global daily_start_balance, last_reset_date, wallet_balance
-    now_date = str(datetime.now().date())
-    if now_date != last_reset_date:
-        daily_start_balance = wallet_balance
-        last_reset_date = now_date
-        save_data()
-        send_telegram(f"🌅 *يوم جديد:* تم تصفير الأهداف.\n💰 رصيد البداية: `{daily_start_balance:.2f}$` ")
-    pnl_pct = (wallet_balance - daily_start_balance) / daily_start_balance
-    if pnl_pct >= 0.10: return False, "✅ تم تحقيق الهدف اليومي (+10%)"
-    if pnl_pct <= -0.03: return False, "🛑 تم بلوغ حد الخسارة اليومي (-3%)"
-    return True, ""
-
-# --- 4. محرك التحليل ---
+# --- 4. محرك التحليل (Scoring) ---
 def get_breakout_score(symbol):
     try:
         bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=60)
@@ -137,67 +123,72 @@ def monitor_thread():
         except: time.sleep(5)
 
 def self_ping_thread():
-    """✅ تعديل هام: التنبيه كل 5 دقائق لمنع رندر من النوم"""
     while True:
         try:
             url = f"https://{APP_URL}" if not APP_URL.startswith("http") else APP_URL
             requests.get(url, timeout=15)
-            # طباعة في سجل السيرفر للتأكد
-            print(f"💓 Heartbeat sent to {url} at {datetime.now()}")
         except: pass
-        time.sleep(300) # 5 دقائق فقط
+        time.sleep(300)
 
-# --- 6. المحرك الرئيسي ---
+# --- 6. المحرك الرئيسي: القناص المرن ---
 def main_engine():
-    send_telegram("🛡️ *Sniper v250.0 Online*\nالمسح: كل 15د | منع النوم: مفعل (كل 5د).")
-    last_scan = datetime.now() - timedelta(minutes=20)
+    send_telegram("🛡️ *Sniper v290.0 Online*\nوضع القناص المرن: إشعارات مستمرة حتى في هبوط السوق.")
+    
+    # يبدأ المسح الأول فوراً
+    last_scan = datetime.now() - timedelta(seconds=SCAN_INTERVAL)
+    
     while True:
         try:
-            is_safe, msg_limit = check_daily_limits()
-            if not is_safe:
-                time.sleep(600); continue
-
             now = datetime.now()
             if now >= last_scan + timedelta(seconds=SCAN_INTERVAL):
-                if not is_btc_safe():
-                    send_telegram("⚠️ *BTC غير مستقر:* تم تأجيل المسح.")
-                    last_scan = now; time.sleep(30); continue
+                btc_status = get_btc_status()
                 
+                # إذا كان السوق هابطاً، نرسل تنبيه "غير آمن" ونواصل العمل
+                if btc_status == "UNSAFE":
+                    send_telegram("⚠️ *تنبيه:* السوق حالياً غير آمن (BTC هابط)، سأواصل البحث عن العملات المتمردة فقط (سكور 16+).")
+
+                print(f"🔄 جاري المسح... حالة السوق: {btc_status}")
                 markets = exchange.fetch_markets()
                 all_usdt = [m['symbol'] for m in markets if m['quote'] == 'USDT' and m['spot'] and m['base'] not in STABLE_COINS]
                 tickers = exchange.fetch_tickers(all_usdt)
-                targets = sorted(all_usdt, key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)[20:520]
+                targets = sorted(all_usdt, key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)[10:310]
 
-                with ThreadPoolExecutor(max_workers=15) as executor:
+                with ThreadPoolExecutor(max_workers=10) as executor:
                     raw_res = list(executor.map(lambda s: {'s': s, 'd': get_breakout_score(s)}, targets))
                     res_sorted = sorted([r for r in raw_res if r['d'][0] > 0], key=lambda x: x['d'][0], reverse=True)
 
                 if res_sorted:
-                    scan_rep = "🔍 *نتائج مسح الـ 15 دقيقة:*\n"
+                    # تقرير المسح الدوري
+                    scan_rep = "🔍 *نتائج مسح السوق:*\n"
                     for i, r in enumerate(res_sorted[:5]):
                         scan_rep += f"{i+1}. `{r['s']}` ➟ `{r['d'][0]}/20` \n"
                     send_telegram(scan_rep)
 
+                    # منطق الدخول الذكي:
                     best = res_sorted[0]
-                    if best['d'][0] >= 12 and best['s'] not in active_trades and len(active_trades) < MAX_TRADES:
-                        active_trades[best['s']] = {'entry': best['d'][1], 'highest_price': best['d'][1],
-                                                   'entry_time': now.strftime('%Y-%m-%d %H:%M:%S'), 'tr_act': False}
-                        save_data()
-                        sl = best['d'][1] * (1 - STOP_LOSS_PCT)
-                        send_telegram(f"🎯 *اقتناص المركز الأول!*\n🪙 العملة: `{best['s']}`\n💰 السعر: `{best['d'][1]}`\n🛑 الوقف: `{sl:.6f}`")
+                    required_score = 16 if btc_status == "UNSAFE" else 12
+                    
+                    if best['d'][0] >= required_score:
+                        if best['s'] not in active_trades and len(active_trades) < MAX_TRADES:
+                            active_trades[best['s']] = {'entry': best['d'][1], 'highest_price': best['d'][1],
+                                                       'entry_time': now.strftime('%Y-%m-%d %H:%M:%S'), 'tr_act': False}
+                            save_data()
+                            sl = best['d'][1] * (1 - STOP_LOSS_PCT)
+                            msg = "🔥 *اقتناص عملة متمردة (عكس السوق):*" if btc_status == "UNSAFE" else "🎯 *اقتناص المركز الأول:*"
+                            send_telegram(f"{msg}\n🪙 `{best['s']}`\n✅ السكور: `{best['d'][0]}`\n🛑 الوقف: `{sl:.6f}`")
                 
                 last_scan = now
-            time.sleep(20)
-        except: time.sleep(10)
+            time.sleep(30)
+        except Exception as e:
+            print(f"Error: {e}"); time.sleep(10)
 
 # --- 7. التشغيل ---
 app = Flask('')
 @app.route('/')
-def home(): return "Bot is Alive"
+def home(): return "Mouldi Sniper Active"
 
 if __name__ == "__main__":
     Thread(target=lambda: app.run(host='0.0.0.0', port=5000)).start()
     Thread(target=monitor_thread).start()
-    Thread(target=self_ping_thread).start() # تشغيل منع النوم
-    Thread(target=lambda: (time.sleep(3600), send_telegram(f"📊 *تقرير الساعة:* `{wallet_balance:.2f}$`"))).start()
+    Thread(target=self_ping_thread).start()
     main_engine()
