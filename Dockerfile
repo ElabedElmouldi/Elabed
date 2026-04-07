@@ -24,3 +24,4 @@ EXPOSE 10000
 
 # 8. أمر التشغيل النهائي للبوت
 CMD ["python", "app.py"]
+web: python app.py
