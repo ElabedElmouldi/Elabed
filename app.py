@@ -9,10 +9,10 @@ from threading import Thread
 import requests
 from concurrent.futures import ThreadPoolExecutor
 
-# --- 1. الإعدادات الأساسية (v6.2.0 - نظام التقارير المتقدم) ---
+# --- 1. الإعدادات الأساسية (v6.3.0 - شرط الـ 5 قوائم فقط) ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "-1003692815602"]
-DATA_FILE = "gold_trader_v620.json"
+DATA_FILE = "gold_trader_v630.json"
 
 exchange = ccxt.binance({'enableRateLimit': True})
 TF_FAST = '1m'
@@ -20,8 +20,8 @@ TF_FAST = '1m'
 INITIAL_BALANCE = 1000.0    
 TRADE_AMOUNT_USD = 50.0     
 MAX_VIRTUAL_TRADES = 20     
-STOP_LOSS_PCT = 0.02        
-TAKE_PROFIT_PCT = 0.03      
+STOP_LOSS_PCT = 0.02        # 2%
+TAKE_PROFIT_PCT = 0.03      # 3%
 SCAN_INTERVAL_MINUTES = 15 
 
 STABLE_AND_GIANTS = ['USDC', 'FDUSD', 'TUSD', 'BUSD', 'DAI', 'USDT', 'BTC', 'ETH', 'BNB', 'SOL']
@@ -29,7 +29,7 @@ STABLE_AND_GIANTS = ['USDC', 'FDUSD', 'TUSD', 'BUSD', 'DAI', 'USDT', 'BTC', 'ETH
 # --- 2. إدارة البيانات والتقارير ---
 virtual_trades = {}
 virtual_balance = INITIAL_BALANCE
-closed_history = [] # سجل الصفقات المغلقة للتقارير
+closed_history = [] 
 
 def load_data():
     global virtual_balance, virtual_trades, closed_history
@@ -58,7 +58,7 @@ def send_telegram(msg):
                            json={"chat_id": cid, "text": msg, "parse_mode": "Markdown"}, timeout=5)
         except: pass
 
-# --- 3. محرك التقارير الدورية ---
+# --- 3. محرك التقارير الدورية (ساعي، نصف يومي، يومي) ---
 def report_manager():
     last_hourly = datetime.now()
     last_half_day = datetime.now()
@@ -68,13 +68,9 @@ def report_manager():
         try:
             now = datetime.now()
             
-            # --- أ. تقرير كل ساعة ---
+            # تقرير الساعة
             if now >= last_hourly + timedelta(hours=1):
-                msg = "🕒 *تقرير الساعة للمحفظة*\n"
-                msg += "━━━━━━━━━━━━━━\n"
-                
-                # الصفقات المفتوحة
-                msg += "📂 *المفتوحة:*\n"
+                msg = "🕒 *تقرير الساعة للمحفظة*\n━━━━━━━━━━━━━━\n📂 *المفتوحة:*\n"
                 if not virtual_trades: msg += "_لا توجد صفقات حالياً_\n"
                 for s, t in virtual_trades.items():
                     try:
@@ -83,70 +79,57 @@ def report_manager():
                         msg += f"• `{s}` | دخل: `{t['start_full_time'].split()[-1]}` | نسبة: `{move:+.2f}%` \n"
                     except: pass
                 
-                # الصفقات المغلقة في آخر ساعة
                 msg += "\n✅ *المغلقة (آخر ساعة):*\n"
                 hour_closed = [c for c in closed_history if datetime.strptime(c['close_time'], '%Y-%m-%d %H:%M:%S') >= now - timedelta(hours=1)]
-                if not hour_closed: msg += "_لم تغلق أي صفقة_\n"
+                if not hour_closed: msg += "_لا يوجد_\n"
                 for c in hour_closed:
-                    msg += f"• `{c['symbol']}` | نتيجة: `{c['pnl_pct']:+.2f}%` | مدة: `{c['duration']}`\n"
+                    msg += f"• `{c['symbol']}` | `{c['pnl_pct']:+.2f}%` | `{c['duration']}`\n"
                 
                 send_telegram(msg)
                 last_hourly = now
 
-            # --- ب. تقرير نصف يومي (12 ساعة) ---
+            # تقرير نصف يومي و يومي (ملخص الرصيد)
             if now >= last_half_day + timedelta(hours=12):
-                half_closed = [c for c in closed_history if datetime.strptime(c['close_time'], '%Y-%m-%d %H:%M:%S') >= now - timedelta(hours=12)]
-                total_pnl = sum([c['pnl_pct'] for c in half_closed])
-                msg = f"🌗 *تقرير نصف يومي (12 ساعة)*\n━━━━━━━━━━━━━━\n"
-                msg += f"📊 عدد الصفقات المغلقة: `{len(half_closed)}` \n"
-                msg += f"📈 إجمالي الربح/الخسارة: `{total_pnl:+.2f}%` \n"
-                msg += f"💰 قيمة المحفظة: `{virtual_balance:.2f}$`"
-                send_telegram(msg)
+                send_telegram(f"🌗 *تقرير 12 ساعة*\n💰 الرصيد: `{virtual_balance:.2f}$` | صفقات المفتوحة: `{len(virtual_trades)}`")
                 last_half_day = now
-
-            # --- ج. تقرير يومي (24 ساعة) ---
-            if now >= last_daily + timedelta(hours=24):
-                daily_closed = [c for c in closed_history if datetime.strptime(c['close_time'], '%Y-%m-%d %H:%M:%S') >= now - timedelta(hours=24)]
-                total_pnl = sum([c['pnl_pct'] for c in daily_closed])
-                msg = f"📅 *التقرير اليومي الشامل*\n━━━━━━━━━━━━━━\n"
-                msg += f"📉 صفقات اليوم: `{len(daily_closed)}` \n"
-                msg += f"🏆 أداء اليوم: `{total_pnl:+.2f}%` \n"
-                msg += f"💰 المحفظة النهائية: `{virtual_balance:.2f}$`"
-                send_telegram(msg)
-                last_daily = now
                 
-                # تنظيف السجل القديم (اختياري)
-                if len(closed_history) > 100: closed_history[:] = closed_history[-100:]
+            if now >= last_daily + timedelta(hours=24):
+                send_telegram(f"📅 *التقرير اليومي*\n💰 الرصيد النهائي: `{virtual_balance:.2f}$`")
+                last_daily = now
 
-        except Exception as e: print(f"Report Error: {e}")
+        except: pass
         time.sleep(60)
 
-# --- 4. محرك التحليل والمراقبة (v6.1.0) ---
+# --- 4. محرك التحليل والمنطق (شرط 5 قوائم فقط) ---
 def analyze_coin(symbol):
     try:
         bars = exchange.fetch_ohlcv(symbol, TF_FAST, limit=50)
         df = pd.DataFrame(bars, columns=['t','o','h','l','c','v'])
+        
         df['ema'] = df['c'].ewm(span=10).mean()
         delta = df['c'].diff(); gain = (delta.where(delta > 0, 0)).rolling(14).mean(); loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rsi = 100 - (100 / (1 + (gain/(loss + 1e-9))))
+        
         score = 0; curr = df['c'].iloc[-1]
-        if curr > df['ema'].iloc[-1]: score += 1
-        if df['v'].iloc[-1] > (df['v'].tail(10).mean() * 2.5): score += 1
-        if 50 <= rsi.iloc[-1] <= 75: score += 1
-        if ((curr - df['c'].iloc[-2])/df['c'].iloc[-2])*100 >= 0.45: score += 1
-        if curr > df['h'].tail(5).max() * 0.997: score += 1
+        if curr > df['ema'].iloc[-1]: score += 1                # 1. الاتجاه
+        if df['v'].iloc[-1] > (df['v'].tail(10).mean() * 2.5): score += 1 # 2. السيولة
+        if 50 <= rsi.iloc[-1] <= 75: score += 1                 # 3. الزخم
+        if ((curr - df['c'].iloc[-2])/df['c'].iloc[-2])*100 >= 0.45: score += 1 # 4. القفزة
+        if curr > df['h'].tail(5).max() * 0.997: score += 1     # 5. الاختراق
+
         return {'symbol': symbol, 'price': curr, 'score': score}
     except: return None
 
 def radar_engine():
     global virtual_balance
-    send_telegram("📊 *بدء نظام التقارير المتكامل v6.2.0*")
+    send_telegram("🚀 *نظام الـ 5 قوائم v6.3.0 نشط*\n(الدخول فقط عند اكتمال الشروط 100%)")
     while True:
         cycle_start = datetime.now()
         try:
             tickers = exchange.fetch_tickers()
             all_targets = [s for s in tickers if s.endswith('/USDT') and s.split('/')[0] not in STABLE_AND_GIANTS]
             sorted_targets = sorted(all_targets, key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)[:600]
+            
             chunks = [sorted_targets[i:i + 150] for i in range(0, len(sorted_targets), 150)]
             all_results = []
             for chunk in chunks:
@@ -154,9 +137,11 @@ def radar_engine():
                     batch_results = list(filter(None, executor.map(analyze_coin, chunk)))
                     all_results.extend(batch_results)
                 time.sleep(1)
-            
-            list_top = [r for r in all_results if r['score'] >= 4]
-            for res in list_top:
+
+            # الفلترة: دخول فقط لمن حقق 5/5
+            list_perfect = [r for r in all_results if r['score'] == 5]
+
+            for res in list_perfect:
                 if res['symbol'] not in virtual_trades and len(virtual_trades) < MAX_VIRTUAL_TRADES:
                     if virtual_balance >= TRADE_AMOUNT_USD:
                         now = datetime.now()
@@ -166,11 +151,18 @@ def radar_engine():
                         }
                         virtual_balance -= TRADE_AMOUNT_USD
                         save_data()
-                        send_telegram(f"🚀 *دخول:* `{res['symbol']}` | سعر: `{res['price']}`")
+                        
+                        # إشعار دخول تفصيلي
+                        msg = (f"🔥 *دخول ذهبي (5/5)*\n🪙 `{res['symbol']}`\n💰 السعر: `{res['price']}`\n"
+                               f"🛑 الوقف: `{res['price']*0.98:.6f}`\n🎯 الهدف: `{res['price']*1.03:.6f}`")
+                        send_telegram(msg)
+
+            send_telegram(f"✅ تم المسح. القادمة: {(cycle_start + timedelta(minutes=SCAN_INTERVAL_MINUTES)).strftime('%H:%M')}")
         except: pass
         elapsed = (datetime.now() - cycle_start).total_seconds()
         time.sleep(max(1, (SCAN_INTERVAL_MINUTES * 60) - elapsed))
 
+# --- 5. مراقبة وإغلاق الصفقات ---
 def monitor_trades():
     global virtual_balance
     while True:
@@ -182,32 +174,5 @@ def monitor_trades():
                 
                 if gain >= TAKE_PROFIT_PCT or gain <= -STOP_LOSS_PCT:
                     now = datetime.now()
-                    start_dt = datetime.strptime(trade['start_full_time'], '%Y-%m-%d %H:%M:%S')
-                    duration = str(now - start_dt).split('.')[0]
-                    
-                    pnl_val = (TRADE_AMOUNT_USD * (1 + gain))
-                    virtual_balance += pnl_val
-                    
-                    # حفظ في سجل التاريخ للتقارير
-                    closed_history.append({
-                        'symbol': s, 'pnl_pct': gain * 100, 
-                        'duration': duration, 'close_time': now.strftime('%Y-%m-%d %H:%M:%S')
-                    })
-                    
-                    send_telegram(f"🏁 *إغلاق:* `{s}` | `{gain*100:+.2f}%` | مدة: `{duration}`")
-                    del virtual_trades[s]
-                    save_data()
-            time.sleep(10)
-        except: time.sleep(5)
-
-# --- 5. التشغيل ---
-app = Flask('')
-@app.route('/')
-def home(): return "Reporting Bot Active"
-
-if __name__ == "__main__":
-    load_data()
-    Thread(target=lambda: app.run(host='0.0.0.0', port=5000)).start()
-    Thread(target=monitor_trades).start()
-    Thread(target=report_manager).start() # تشغيل مدير التقارير
-    radar_engine()
+                    duration = str(now - datetime.strptime(trade['start_full_time'], '%Y-%m-%d %H:%M:%S')).split('.')[0]
+                    virtual_balance += (TRADE
