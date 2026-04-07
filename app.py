@@ -9,10 +9,10 @@ from threading import Thread
 import requests
 from concurrent.futures import ThreadPoolExecutor
 
-# --- 1. الإعدادات الأساسية (v6.0.0 - شرط الـ 5 قوائم) ---
+# --- 1. الإعدادات الأساسية (v6.1.0 - دخول 4 أو 5 قوائم) ---
 TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
 FRIENDS_IDS = ["5067771509", "-1003692815602"]
-DATA_FILE = "gold_trader_v600.json"
+DATA_FILE = "gold_trader_v610.json"
 
 exchange = ccxt.binance({'enableRateLimit': True})
 TF_FAST = '1m'
@@ -59,7 +59,6 @@ def analyze_coin(symbol):
         if not bars: return None
         df = pd.DataFrame(bars, columns=['t','o','h','l','c','v'])
         
-        # المؤشرات
         df['ema'] = df['c'].ewm(span=10).mean()
         delta = df['c'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
@@ -82,7 +81,7 @@ def analyze_coin(symbol):
 # --- 4. رادار المسح الدوري (15 دقيقة) ---
 def radar_engine():
     global virtual_balance
-    send_telegram(f"⚡ *تم تشغيل نظام النخبة v6.0.0*\nالشرط: 5/5 قوائم كاملة\nالدورة: كل {SCAN_INTERVAL_MINUTES} دقيقة")
+    send_telegram(f"⚖️ *نظام المسح v6.1.0 نشط*\nالشرط: 4 أو 5 قوائم للدخول\nإعادة المسح: كل {SCAN_INTERVAL_MINUTES} دقيقة")
     
     while True:
         cycle_start = datetime.now()
@@ -100,20 +99,21 @@ def radar_engine():
                     all_results.extend(batch_results)
                 time.sleep(1)
 
-            # تصفية العملات التي حققت 5 قوائم فقط
-            list_5 = [r for r in all_results if r['score'] == 5]
+            # تصفية العملات (4 أو 5 قوائم)
+            list_top = [r for r in all_results if r['score'] >= 4]
 
-            if list_5:
-                report_msg = "🔥 *عملات حققت 5 قوائم كاملة:*\n"
-                report_msg += f"`{', '.join([r['symbol'] for r in list_5])}`"
+            if list_top:
+                # إرسال تقرير بالعملات المكتشفة قبل الدخول
+                report_msg = "🔍 *عملات قوية مكتشفة (4-5 قوائم):*\n"
+                for r in list_top:
+                    report_msg += f"• `{r['symbol']}` (النقاط: {r['score']}/5)\n"
                 send_telegram(report_msg)
 
-                for res in list_5:
-                    # منع التكرار والتحقق من الرصيد
+                for res in list_top:
+                    # منع التكرار والتحقق من الرصيد والحد الأقصى للصفقات
                     if res['symbol'] not in virtual_trades and len(virtual_trades) < MAX_VIRTUAL_TRADES:
                         if virtual_balance >= TRADE_AMOUNT_USD:
                             now = datetime.now()
-                            # حساب الوقف والهدف للعرض فقط
                             sl_price = res['price'] * (1 - STOP_LOSS_PCT)
                             tp_price = res['price'] * (1 + TAKE_PROFIT_PCT)
                             
@@ -124,29 +124,28 @@ def radar_engine():
                             virtual_balance -= TRADE_AMOUNT_USD
                             save_data()
                             
-                            # إشعار الدخول التفصيلي المطلوب
+                            # إشعار الدخول التفصيلي
                             entry_msg = (
-                                f"🚀 *إشعار دخول صفقة جديدة*\n"
+                                f"🚀 *إشعار دخول صفقة ({res['score']} قوائم)*\n"
                                 f"━━━━━━━━━━━━━━\n"
-                                f"🪙 اسم العملة: `{res['symbol']}`\n"
+                                f"🪙 العملة: `{res['symbol']}`\n"
                                 f"💰 سعر الدخول: `{res['price']}`\n"
-                                f"🛑 وقف الخسارة: `{sl_price:.6f}` (-2%)\n"
-                                f"🎯 جني الأرباح: `{tp_price:.6f}` (+3%)\n"
-                                f"⏰ وقت الدخول: `{now.strftime('%H:%M:%S')}`"
+                                f"🛑 وقف الخسارة: `{sl_price:.6f}`\n"
+                                f"🎯 جني الأرباح: `{tp_price:.6f}`\n"
+                                f"⏰ الوقت: `{now.strftime('%H:%M:%S')}`"
                             )
                             send_telegram(entry_msg)
 
-            send_telegram(f"✅ انتهى المسح. الدورة القادمة: {(cycle_start + timedelta(minutes=SCAN_INTERVAL_MINUTES)).strftime('%H:%M')}")
+            send_telegram(f"✅ انتهى مسح 600 عملة. الدورة القادمة: {(cycle_start + timedelta(minutes=SCAN_INTERVAL_MINUTES)).strftime('%H:%M')}")
 
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Radar Error: {e}")
         
-        # موازنة الوقت للانتظار 15 دقيقة
         elapsed = (datetime.now() - cycle_start).total_seconds()
         wait_time = max(1, (SCAN_INTERVAL_MINUTES * 60) - elapsed)
         time.sleep(wait_time)
 
-# --- 5. مراقبة الصفقات ---
+# --- 5. مراقبة وإغلاق الصفقات ---
 def monitor_trades():
     global virtual_balance
     while True:
@@ -169,7 +168,7 @@ def monitor_trades():
 # --- 6. التشغيل ---
 app = Flask('')
 @app.route('/')
-def home(): return "Bot v6.0.0 Active"
+def home(): return "Bot v6.1.0 Running"
 
 if __name__ == "__main__":
     load_data()
