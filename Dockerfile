@@ -1,27 +1,36 @@
-# 1. استخدام نسخة خفيفة ومستقرة من بايثون
-FROM python:3.10-slim
+# =========================
+# PRO AI TRADING BOT
+# =========================
 
-# 2. تعيين مجلد العمل داخل الحاوية (Container)
+FROM python:3.11-slim
+
+# تحسين الأداء والاستقرار
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONFAULTHANDLER=1
+
+# مجلد العمل
 WORKDIR /app
 
-# 3. تثبيت أدوات النظام الضرورية لعمل المكتبات (مثل pandas و numpy)
+# تثبيت أدوات النظام (مهم للـ AI + pandas + ta)
 RUN apt-get update && apt-get install -y \
     build-essential \
+    gcc \
+    g++ \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# 4. نسخ ملف المكتبات أولاً للاستفادة من الـ Caching وتسريع البناء
-COPY requirements.txt .
+# نسخ المشروع
+COPY . /app
 
-# 5. تثبيت المكتبات البرمجية
+# تحديث pip
+RUN pip install --no-cache-dir --upgrade pip
+
+# تثبيت المتطلبات
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 6. نسخ بقية ملفات المشروع (الكود) إلى الحاوية
-COPY . .
+# فتح منفذ (Flask / Keep alive)
+EXPOSE 8080
 
-# 7. تعيين المنفذ الافتراضي (Render يستخدم PORT تلقائياً)
-ENV PORT=10000
-EXPOSE 10000
-
-# 8. أمر التشغيل النهائي للبوت
-CMD ["python", "app.py"]
-
+# تشغيل البوت
+CMD ["python", "-u", "app.py"]
