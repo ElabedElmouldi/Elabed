@@ -7,13 +7,15 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ======================
-# CONFIG (PRO SAFE)
+# CONFIG (FIXED)
 # ======================
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 if not TOKEN:
-    raise Exception("TELEGRAM_TOKEN not found in environment variables")
+    print("❌ Missing TELEGRAM_TOKEN")
+    print("👉 Add it in Railway Variables")
+    exit()
 
 # ======================
 # BOT STATE
@@ -28,14 +30,16 @@ closed_trades = []
 # SEND MESSAGE
 # ======================
 def send(msg):
+    if not CHAT_ID:
+        return
+
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
 # ======================
-# SIMPLE SCANNER (DEMO)
+# SIMPLE SCANNER
 # ======================
 def scan_market():
-    # هنا لاحقاً تربط Binance / Gate.io
     return ["BTC_USDT", "ETH_USDT"]
 
 # ======================
@@ -59,7 +63,7 @@ def trading_loop():
         time.sleep(10)
 
 # ======================
-# TELEGRAM COMMANDS
+# COMMANDS
 # ======================
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"""
@@ -68,7 +72,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🟢 Running: {bot_running}
 💰 Capital: {capital}
 📂 Open Trades: {len(open_trades)}
-✅ Closed Trades: {len(closed_trades)}
+📁 Closed Trades: {len(closed_trades)}
 """
     await update.message.reply_text(msg)
 
@@ -83,8 +87,15 @@ async def stop_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⛔ Bot Stopped")
 
 async def portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = "\n".join([f"{t['symbol']} @ {t['entry']}" for t in open_trades])
-    await update.message.reply_text(msg or "No trades")
+    if not open_trades:
+        await update.message.reply_text("No open trades")
+        return
+
+    msg = ""
+    for t in open_trades:
+        msg += f"{t['symbol']} @ {t['entry']}\n"
+
+    await update.message.reply_text(msg)
 
 # ======================
 # MAIN
@@ -97,10 +108,11 @@ def main():
     app.add_handler(CommandHandler("stop_bot", stop_bot))
     app.add_handler(CommandHandler("portfolio", portfolio))
 
-    # تشغيل التداول في background
     threading.Thread(target=trading_loop, daemon=True).start()
 
-    print("🚀 Bot is running...")
+    print("🚀 Bot running...")
+    send("🤖 Bot started successfully")
+
     app.run_polling()
 
 # ======================
