@@ -1,9 +1,6 @@
-python-telegram-bot==20.7
+python-telegram-bot
+websocket-client
 requests
-pandas
 numpy
-ta
 scikit-learn
-flask
-aiohttp
-joblib
+pandas
