@@ -1,100 +1,108 @@
-.,
-.import time
+import os
+import time
 import threading
+import requests
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-from ws_engine import start_ws, price_data
-from ai_model import AIModel
-from strategy import decision
-from risk import position_size
-from portfolio import portfolio, add_trade, close_trade
+# ======================
+# CONFIG (PRO SAFE)
+# ======================
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
+if not TOKEN:
+    raise Exception("TELEGRAM_TOKEN not found in environment variables")
 
 # ======================
-# INIT AI
+# BOT STATE
 # ======================
-ai = AIModel()
-capital = 1000
 bot_running = True
+capital = 1000
+
+open_trades = []
+closed_trades = []
 
 # ======================
-# TELEGRAM COMMANDS
+# SEND MESSAGE
 # ======================
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🟢 HEDGE FUND PRO MAX v2 RUNNING")
-
-async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(str(portfolio))
-
-async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global bot_running
-    bot_running = True
-    await update.message.reply_text("🚀 BOT STARTED")
-
-async def stop_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global bot_running
-    bot_running = False
-    await update.message.reply_text("⛔ BOT STOPPED")
+def send(msg):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
 # ======================
-# FEATURE ENGINE
+# SIMPLE SCANNER (DEMO)
 # ======================
-def extract_features(price):
-    return [price, price * 0.5, price * 0.2]
+def scan_market():
+    # هنا لاحقاً تربط Binance / Gate.io
+    return ["BTC_USDT", "ETH_USDT"]
 
 # ======================
-# TRADING ENGINE
+# TRADING LOOP
 # ======================
 def trading_loop():
     global bot_running
 
     while True:
         if bot_running:
+            signals = scan_market()
 
-            for symbol, price in price_data.items():
+            for sym in signals:
+                if len(open_trades) < 5:
+                    open_trades.append({
+                        "symbol": sym,
+                        "entry": 100
+                    })
+                    send(f"🟢 BUY SIGNAL: {sym}")
 
-                try:
-                    x = extract_features(price)
-                    prob = ai.predict(x)
-
-                    action = decision(prob)
-
-                    # ===== BUY =====
-                    if action == "STRONG_BUY":
-                        size = position_size(capital)
-                        add_trade(symbol, price, size)
-
-                    # ===== SELL (hedge/close) =====
-                    elif action == "SELL":
-                        close_trade(symbol, price)
-
-                except:
-                    continue
-
-        time.sleep(5)
+        time.sleep(10)
 
 # ======================
-# START EVERYTHING
+# TELEGRAM COMMANDS
+# ======================
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = f"""
+🧠 BOT STATUS
+
+🟢 Running: {bot_running}
+💰 Capital: {capital}
+📂 Open Trades: {len(open_trades)}
+✅ Closed Trades: {len(closed_trades)}
+"""
+    await update.message.reply_text(msg)
+
+async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global bot_running
+    bot_running = True
+    await update.message.reply_text("🚀 Bot Started")
+
+async def stop_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global bot_running
+    bot_running = False
+    await update.message.reply_text("⛔ Bot Stopped")
+
+async def portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = "\n".join([f"{t['symbol']} @ {t['entry']}" for t in open_trades])
+    await update.message.reply_text(msg or "No trades")
+
+# ======================
+# MAIN
 # ======================
 def main():
-    app = Application.builder().token("YOUR_TOKEN").build()
+    app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("portfolio", portfolio_cmd))
     app.add_handler(CommandHandler("start_bot", start_bot))
     app.add_handler(CommandHandler("stop_bot", stop_bot))
+    app.add_handler(CommandHandler("portfolio", portfolio))
 
-    # WebSocket thread
-    threading.Thread(target=start_ws, daemon=True).start()
-
-    # Trading loop thread
+    # تشغيل التداول في background
     threading.Thread(target=trading_loop, daemon=True).start()
 
-    print("🚀 HEDGE FUND PRO MAX v2 STARTED")
-
+    print("🚀 Bot is running...")
     app.run_polling()
 
 # ======================
 if __name__ == "__main__":
-    main().
+    main()
