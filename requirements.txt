@@ -1,8 +1,9 @@
-flask
-ccxt
+python-telegram-bot==20.7
+requests
 pandas
 numpy
-requests
-apscheduler
-gunicorn
-fpdf
+ta
+scikit-learn
+flask
+aiohttp
+joblib
