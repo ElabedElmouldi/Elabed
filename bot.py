@@ -10,7 +10,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 # CONFIG (FIXED)
 # ======================
 TOKEN = os.getenv("8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68")
-CHAT_ID = os.getenv("CHAT_ID")
+CHAT_ID = os.getenv("5067771509")
 
 if not TOKEN:
     print("❌ Missing TELEGRAM_TOKEN")
